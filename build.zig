@@ -76,9 +76,11 @@ pub fn build(b: *std.Build) void {
 }
 
 fn linkSqlite(module: *std.Build.Module) void {
+    module.linkSystemLibrary("c", .{});
     module.linkSystemLibrary("sqlite3", .{});
 }
 
 fn linkLibusb(module: *std.Build.Module) void {
+    module.linkSystemLibrary("c", .{});
     module.linkSystemLibrary("usb-1.0", .{});
 }
