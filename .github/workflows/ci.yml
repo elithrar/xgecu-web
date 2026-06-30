@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libusb-1.0-0-dev sqlite3 libsqlite3-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install pkg-config libusb sqlite
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Test
+        run: zig build test
+
+      - name: Build
+        run: zig build
+
+      - name: Install smoke test
+        run: |
+          zig build --prefix "$RUNNER_TEMP/minipro-zig" install
+          "$RUNNER_TEMP/minipro-zig/bin/minipro-zig" --version
+          test -x "$RUNNER_TEMP/minipro-zig/bin/compare_cli"
+          test -f "$RUNNER_TEMP/minipro-zig/share/doc/minipro-zig/README.md"
+          test -f "$RUNNER_TEMP/minipro-zig/share/doc/minipro-zig/linux.md"
+          test -f "$RUNNER_TEMP/minipro-zig/share/man/man1/minipro-zig.1"
+          test -f "$RUNNER_TEMP/minipro-zig/share/bash-completion/completions/minipro-zig"
+          test -f "$RUNNER_TEMP/minipro-zig/share/fish/vendor_completions.d/minipro-zig.fish"
+          test -f "$RUNNER_TEMP/minipro-zig/share/zsh/site-functions/_minipro-zig"
+          test -f "$RUNNER_TEMP/minipro-zig/share/minipro-zig/schema.sql"
+          test -f "$RUNNER_TEMP/minipro-zig/lib/udev/rules.d/60-minipro-zig.rules"
