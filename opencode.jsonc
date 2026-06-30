@@ -1,0 +1,32 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "external_directory": {
+      "/opt/homebrew/Cellar/zig/**": "allow",
+      "/opt/homebrew/opt/zig/**": "allow",
+      "/var/folders/*/T/opencode/**": "allow",
+      "~/repos/minipro/**": "allow",
+      "~/repos/minipro-zig/**": "allow"
+    },
+    "bash": {
+      "zig *": "allow",
+      "zig": "allow",
+      "command -v zig": "allow",
+      "command -v minipro": "allow",
+      "which zig": "allow",
+      "which minipro": "allow",
+      "pkg-config *": "allow",
+      "minipro *": "allow",
+      "sh \"tools/build_oracle.sh\"": "allow",
+      "sh tools/build_oracle.sh": "allow",
+      "./tools/*": "allow",
+      "sqlite3 *": "allow",
+      "./zig-out/bin/minipro-zig *": "allow",
+      "./zig-out/bin/compare_cli *": "allow",
+      "zig-out/bin/minipro-zig *": "allow",
+      "zig-out/bin/compare_cli *": "allow",
+      "\"zig-cache/oracle/minipro-src/minipro\" *": "allow",
+      "zig-cache/oracle/minipro-src/minipro *": "allow"
+    }
+  }
+}
