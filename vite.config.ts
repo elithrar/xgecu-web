@@ -5,7 +5,7 @@ export default defineConfig({
   build: {
     lib: {
       entry: "js/src/index.ts",
-      name: "XgecuWebUSB",
+      name: "XgecuWeb",
       formats: ["es"],
       fileName: () => "index.js"
     },

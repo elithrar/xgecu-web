@@ -26,7 +26,7 @@ Supported programmer hardware is limited to T48/T56. The browser chooser filters
 Example transfer loop shape:
 
 ```ts
-import { WasmBridge, createProgrammer, performWebUSBTransfer } from "@xgecu/webusb";
+import { WasmBridge, createProgrammer, performWebUSBTransfer } from "xgecu-web";
 
 const api = await createProgrammer();
 const programmer = await api.requestProgrammer();

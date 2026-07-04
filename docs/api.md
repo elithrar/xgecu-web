@@ -3,7 +3,7 @@
 The package exposes a high-level browser API plus lower-level WebUSB/Wasm helpers for tests and custom integrations.
 
 ```ts
-import { createProgrammer } from "@xgecu/webusb";
+import { createProgrammer } from "xgecu-web";
 ```
 
 ## Core types
@@ -30,7 +30,7 @@ Loads the Wasm module and returns the high-level browser API.
 
 ```ts
 const api = await createProgrammer({
-  wasmUrl: new URL("./xgecu_webusb.wasm", import.meta.url)
+  wasmUrl: new URL("./xgecu_web.wasm", import.meta.url)
 });
 ```
 

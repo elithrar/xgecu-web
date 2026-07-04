@@ -1,4 +1,4 @@
-# @xgecu/webusb
+# xgecu-web
 
 Browser WebUSB APIs for programming ROM devices with XGecu T48/T56 programmers.
 
@@ -17,7 +17,7 @@ Useful pnpm scripts:
 ```sh
 pnpm build            # build Wasm + browser JS package
 pnpm build:zig        # compile Zig library tests and Wasm module
-pnpm build:wasm       # build xgecu_webusb.wasm
+pnpm build:wasm       # build xgecu_web.wasm
 pnpm build:js         # build the TypeScript browser package
 pnpm generate:catalog # regenerate src/catalog/generated.zig from data/catalog.json
 pnpm check:catalog    # verify generated catalog output is up to date
@@ -46,7 +46,7 @@ zig build wasm -Doptimize=ReleaseSmall
 WebUSB requires a Chromium-based browser and a secure context: HTTPS or `localhost`.
 
 ```ts
-import { createProgrammer } from "@xgecu/webusb";
+import { createProgrammer } from "xgecu-web";
 
 const api = await createProgrammer();
 
@@ -77,7 +77,7 @@ For a complete browser example that backs up and writes a 28-pin EEPROM, see `do
 Other Zig programs can import the package module and provide their own transport:
 
 ```zig
-const xgecu = @import("xgecu-webusb");
+const xgecu = @import("xgecu-zig");
 
 const summaries = try xgecu.rom.deviceList(allocator, "AT28", .t48, 25);
 defer allocator.free(summaries);

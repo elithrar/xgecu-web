@@ -1,4 +1,4 @@
-# Agent guide for @xgecu/webusb
+# Agent guide for xgecu-web
 
 This repository builds a browser WebUSB package for XGecu T48/T56 programmers. The core protocol logic is Zig, the browser ABI is Wasm, and the public browser API is TypeScript.
 
