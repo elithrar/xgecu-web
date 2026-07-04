@@ -11,6 +11,7 @@ function App() {
   const [selectedDevice, setSelectedDevice] = useState("AT28C64B@DIP28");
   const [rom, setRom] = useState<Uint8Array | null>(null);
   const [writeImage, setWriteImage] = useState<Uint8Array | null>(null);
+  const [downloadUrl, setDownloadUrl] = useState<string | undefined>();
   const [skipIdCheck, setSkipIdCheck] = useState(false);
   const [confirmWrite, setConfirmWrite] = useState(false);
   const [status, setStatus] = useState("Loading Wasm...");
@@ -39,16 +40,36 @@ function App() {
     }
   }, [api, query]);
   const devices = deviceList.devices;
+  const selectedSummary = useMemo(() => devices.find((device) => device.name === selectedDevice) ?? null, [devices, selectedDevice]);
+  const canWrite = Boolean(api && programmer && writeImage && rom && writeImage.byteLength === rom.byteLength && confirmWrite);
 
   useEffect(() => {
     if (deviceList.error) setStatus(deviceList.error.message);
   }, [deviceList.error]);
+
+  useEffect(() => {
+    if (!rom) {
+      setDownloadUrl(undefined);
+      return;
+    }
+
+    const url = URL.createObjectURL(new Blob([toArrayBuffer(rom)], { type: "application/octet-stream" }));
+    setDownloadUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [rom]);
+
+  useEffect(() => {
+    setRom(null);
+    setWriteImage(null);
+    setConfirmWrite(false);
+  }, [selectedDevice]);
 
   async function connect() {
     if (!api) return;
     setStatus("Requesting WebUSB device...");
     try {
       const connection = await api.requestProgrammer();
+      await programmer?.close();
       setProgrammer(connection);
       setStatus(`Connected to ${connection.productName ?? "programmer"}.`);
     } catch (error) {
@@ -130,6 +151,14 @@ function App() {
             ))}
           </select>
         </label>
+        {selectedSummary ? (
+          <p className="note">
+            {selectedSummary.packagePins} pins, {selectedSummary.codeMemorySize} code bytes, page size {selectedSummary.pageSize}
+            {selectedSummary.chipIdBytesCount ? `, chip ID 0x${selectedSummary.chipId.toString(16)}` : ", no catalogued chip ID"}.
+          </p>
+        ) : (
+          <p className="warning">Selected device is not in the current search results.</p>
+        )}
       </section>
 
       <section className="actions">
@@ -139,7 +168,7 @@ function App() {
         <a
           className={rom ? "button" : "button disabled"}
           download={`${selectedDevice}.bin`}
-          href={rom ? URL.createObjectURL(new Blob([toArrayBuffer(rom)], { type: "application/octet-stream" })) : undefined}
+          href={downloadUrl}
         >
           Download readback
         </a>
@@ -152,13 +181,17 @@ function App() {
         </label>
         <label className="checkbox">
           <input type="checkbox" checked={skipIdCheck} onChange={(event) => setSkipIdCheck(event.currentTarget.checked)} />
-          Skip chip ID check when metadata does not match or no ID is available
+          Skip chip ID check only if you have externally identified the chip
         </label>
         <label className="checkbox warning">
           <input type="checkbox" checked={confirmWrite} onChange={(event) => setConfirmWrite(event.currentTarget.checked)} />
-          I understand writing will erase/program the selected ROM
+          I saved the readback, confirmed chip orientation, and verified the image length
         </label>
-        <button disabled={!api || !programmer || !writeImage || !rom || writeImage.byteLength !== rom.byteLength || !confirmWrite} onClick={() => void writeRom()}>
+        {writeImage && rom && writeImage.byteLength !== rom.byteLength ? (
+          <p className="warning">Image size mismatch: expected {rom.byteLength} bytes, got {writeImage.byteLength}.</p>
+        ) : null}
+        {!rom ? <p className="note">Read and download a backup before writing is enabled.</p> : null}
+        <button disabled={!canWrite} onClick={() => void writeRom()}>
           Write ROM with erase + verify
         </button>
       </section>

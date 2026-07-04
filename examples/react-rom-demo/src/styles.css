@@ -42,6 +42,11 @@ label {
   color: #9f2d20;
 }
 
+p.warning {
+  margin: 0;
+  font-weight: 600;
+}
+
 input,
 select,
 button,

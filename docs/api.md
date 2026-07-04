@@ -3,7 +3,7 @@
 The package exposes a high-level browser API plus lower-level WebUSB/Wasm helpers for tests and custom integrations.
 
 ```ts
-import { createProgrammer } from "xgecu-web";
+import { createProgrammer, XgecuWebUSBError, type ProgrammerConnection } from "xgecu-web";
 ```
 
 High-level API methods return plain values and throw package-owned `XgecuWebUSBError` objects for expected WebUSB, catalog, and programmer errors. The error object includes a stable `code` for UI branching.
@@ -33,6 +33,41 @@ interface DeviceSummary {
 
 `programmerKind` defaults to `"auto"` for ROM operations. `memory` defaults to `"code"`.
 
+## Error handling
+
+Catch `XgecuWebUSBError` around user-initiated operations and branch on `code` for app UI:
+
+```ts
+let programmer: ProgrammerConnection | undefined;
+try {
+  programmer = await api.requestProgrammer();
+  const bytes = await api.readROM({ programmer, device: "AT28C64B@DIP28" });
+  console.log(bytes.byteLength);
+} catch (error) {
+  if (error instanceof XgecuWebUSBError) {
+    switch (error.code) {
+      case "ChipIdMismatch":
+        // Prompt the user to re-check the chip marking, package, orientation, and catalog entry.
+        break;
+      case "OperationInProgress":
+        // Disable duplicate buttons while the current operation finishes.
+        break;
+      case "OperationAborted":
+        // User-initiated cancellation.
+        break;
+      default:
+        console.error(error.code, error.message);
+    }
+  } else {
+    throw error;
+  }
+} finally {
+  await programmer?.close();
+}
+```
+
+Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `AlgorithmUnavailable`, `InputTooLarge`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
+
 ## `createProgrammer(options?)`
 
 Loads the Wasm module and returns the high-level browser API.
@@ -47,7 +82,9 @@ Omit `wasmUrl` when the bundler can resolve the package's default Wasm asset.
 For bundlers that prefer package subpaths, use:
 
 ```ts
-const wasmUrl = new URL("xgecu-web/xgecu_web.wasm", import.meta.url);
+const api = await createProgrammer({
+  wasmUrl: new URL("xgecu-web/xgecu_web.wasm", import.meta.url)
+});
 ```
 
 Use `usb` to inject a WebUSB-compatible object in tests:
@@ -85,6 +122,15 @@ for (const programmer of programmers) {
 
 Use `connectProgrammer(device)` with a `USBDevice` returned by `navigator.usb.getDevices()` when you want to reconnect without showing the chooser.
 
+```ts
+const authorized = await navigator.usb.getDevices();
+const existing = authorized.find((device) => device.vendorId === 0xa466 && device.productId === 0x0a53);
+if (existing) {
+  const programmer = await api.connectProgrammer(existing);
+  // Use programmer with readROM/writeROM.
+}
+```
+
 ## `resolveDevice(name, programmer?)`
 
 Resolves a canonical name or alias through the embedded catalog and returns full device metadata.
@@ -120,6 +166,8 @@ const data = await api.readROM({
   memory: "code",
   programmerKind: "t48",
   skipIdCheck: false,
+  continueOnIdMismatch: false,
+  signal: abortController.signal,
   onProgress: (event) => console.log(event.phase, event.offset, event.total)
 });
 ```
@@ -131,8 +179,26 @@ Pass an `AbortSignal` as `signal` to cancel before the next USB transfer.
 ## `writeROM(options)`
 
 Writes a memory image to the selected target. `data` must be a non-empty `Uint8Array`.
+Always read and save a backup before writing, and compare the image length to the readback length before calling `writeROM`.
 
 ```ts
+const abortController = new AbortController();
+const fileInput = document.querySelector<HTMLInputElement>("#rom-image")!;
+const selectedImage = fileInput.files?.[0];
+if (!selectedImage) throw new Error("Choose an image first.");
+const data = new Uint8Array(await selectedImage.arrayBuffer());
+const original = await api.readROM({
+  programmer,
+  device: "AT28C64B@DIP28",
+  memory: "code",
+  programmerKind: "t48"
+});
+
+if (data.byteLength !== original.byteLength) {
+  throw new Error(`Image size mismatch: expected ${original.byteLength} bytes, got ${data.byteLength}.`);
+}
+
+// Save original as a backup before continuing.
 await api.writeROM({
   programmer,
   device: "AT28C64B@DIP28",
@@ -141,13 +207,19 @@ await api.writeROM({
   programmerKind: "t48",
   erase: true,
   verify: true,
-  skipIdCheck: false
+  skipIdCheck: false,
+  continueOnIdMismatch: false,
+  unprotectBefore: false,
+  protectAfter: false,
+  signal: abortController.signal,
+  onProgress: (event) => console.log(event.phase, event.offset, event.total)
 });
 ```
 
 `erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 Protected flash workflows can opt into `unprotectBefore` and `protectAfter` when the chip and catalog flags require it.
+Only one ROM operation may be active per programmer connection; overlapping calls throw `OperationInProgress`.
 
 For a complete backup-then-write browser flow, including image length checks, see `docs/examples.md`.
 
