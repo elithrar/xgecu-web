@@ -9,6 +9,7 @@ const transport = @import("transport.zig");
 
 pub const Error = t48.Error || t56.Error || std.mem.Allocator.Error || error{
     UnsupportedProgrammer,
+    ProgrammerInBootloader,
     AlgorithmUnavailable,
     ChipIdMismatch,
     ProgrammerStatusError,
@@ -49,12 +50,12 @@ pub fn begin(
     };
 }
 
-pub fn end(programmer: model.Programmer, trans: transport.Transport) void {
-    switch (programmer) {
-        .t48 => t48.endTransaction(trans) catch {},
-        .t56 => t56.endTransaction(trans) catch {},
-        else => {},
-    }
+pub fn end(programmer: model.Programmer, trans: transport.Transport) Error!void {
+    return switch (programmer) {
+        .t48 => t48.endTransaction(trans),
+        .t56 => t56.endTransaction(trans),
+        else => Error.UnsupportedProgrammer,
+    };
 }
 
 pub fn readBlock(programmer: model.Programmer, trans: transport.Transport, kind: model.MemoryKind, address: u32, out: []u8) Error!void {

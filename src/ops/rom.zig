@@ -28,6 +28,8 @@ pub const WriteOptions = struct {
     programmer: model.Programmer = .auto,
     memory: model.MemoryKind = .code,
     erase: bool = true,
+    erase_num_fuses: u8 = 0,
+    erase_pld: u8 = 0,
     verify: bool = true,
     skip_id_check: bool = false,
     continue_on_id_mismatch: bool = false,
@@ -56,7 +58,8 @@ pub fn readROM(
     const descriptor = device.descriptor(info.programmer);
     const ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
     defer ctx.deinit(allocator);
-    defer protocol.end(info.programmer, trans);
+    var protocol_open = true;
+    errdefer if (protocol_open) protocol.end(info.programmer, trans) catch {};
 
     try checkChipId(info.programmer, trans, device, .{
         .skip = options.skip_id_check,
@@ -68,8 +71,11 @@ pub fn readROM(
     while (offset < out.len) {
         const len = @min(chunk_size, out.len - offset);
         try protocol.readBlock(info.programmer, trans, options.memory, @intCast(offset), out[offset .. offset + len]);
+        try checkReadStatus(info.programmer, trans);
         offset += len;
     }
+    try protocol.end(info.programmer, trans);
+    protocol_open = false;
     return out;
 }
 
@@ -92,7 +98,7 @@ pub fn writeROM(
     const first_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
     defer first_ctx.deinit(allocator);
     protocol_open = true;
-    defer if (protocol_open) protocol.end(info.programmer, trans);
+    errdefer if (protocol_open) protocol.end(info.programmer, trans) catch {};
 
     try checkChipId(info.programmer, trans, device, .{
         .skip = options.skip_id_check,
@@ -102,8 +108,8 @@ pub fn writeROM(
     var second_ctx: ?protocol.BeginContext = null;
     defer if (second_ctx) |ctx| ctx.deinit(allocator);
     if (options.erase) {
-        try protocol.erase(info.programmer, trans, 0, 0);
-        protocol.end(info.programmer, trans);
+        try protocol.erase(info.programmer, trans, options.erase_num_fuses, options.erase_pld);
+        try protocol.end(info.programmer, trans);
         protocol_open = false;
         second_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
         protocol_open = true;
@@ -132,10 +138,13 @@ pub fn writeROM(
         while (offset < actual.len) {
             const len = @min(read_chunk, actual.len - offset);
             try protocol.readBlock(info.programmer, trans, options.memory, @intCast(offset), actual[offset .. offset + len]);
+            try checkReadStatus(info.programmer, trans);
             offset += len;
         }
         if (!std.mem.eql(u8, data, actual)) return Error.VerifyFailed;
     }
+    try protocol.end(info.programmer, trans);
+    protocol_open = false;
 }
 
 fn openSupportedSession(trans: transport_mod.Transport, requested: model.Programmer) Error!session.SystemInfo {
@@ -144,6 +153,7 @@ fn openSupportedSession(trans: transport_mod.Transport, requested: model.Program
         .t48, .t56 => {},
         else => return Error.UnsupportedProgrammer,
     }
+    if (info.status == .bootloader) return Error.ProgrammerInBootloader;
     if (requested != .auto and requested != info.programmer) return Error.ProgrammerMismatch;
     return info;
 }
@@ -173,6 +183,13 @@ fn readChunkSize(programmer: model.Programmer, descriptor: t48.Device) usize {
         @min(descriptor_chunk, protocol_bytes.packet.t56_read_payload_max)
     else
         descriptor_chunk;
+}
+
+fn checkReadStatus(programmer: model.Programmer, trans: transport_mod.Transport) Error!void {
+    if (programmer != .t48) return;
+    const status = try protocol.requestStatus(programmer, trans);
+    if (status.overcurrent != 0) return Error.Overcurrent;
+    if (status.error_code != 0) return Error.ProgrammerStatusError;
 }
 
 fn protectOff(programmer: model.Programmer, trans: transport_mod.Transport) Error!void {
@@ -231,6 +248,22 @@ test "T56 read chunk size is capped to protocol payload window" {
     descriptor.read_buffer_size = 512;
     try std.testing.expectEqual(@as(usize, protocol_bytes.packet.t56_read_payload_max), readChunkSize(.t56, descriptor));
     try std.testing.expectEqual(@as(usize, 512), readChunkSize(.t48, descriptor));
+}
+
+test "readROM reports chip ID mismatch before reading payload" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[5] = 2;
+    response[6] = 7;
+    @memcpy(response[8..24], "2026-07-04......");
+    response[12] = 0;
+    @memcpy(response[24..32], "T48CODE!");
+    @memcpy(response[32..54], "SERIAL-T48-00000000000");
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    try std.testing.expectError(Error.ChipIdMismatch, readROM(std.testing.allocator, fake.transport(), "W25Q32JV@SOIC8", .{ .programmer = .t48 }));
+    try std.testing.expectEqual(@as(usize, 0), fake.payload_sent.items.len);
 }
 
 test "writeROM uses T48 erase write status and verify sequence" {

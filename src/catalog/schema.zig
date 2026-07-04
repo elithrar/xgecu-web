@@ -46,7 +46,8 @@ pub const DeviceRecord = struct {
     }
 
     pub fn descriptor(self: DeviceRecord, programmer: model.Programmer) t48.Device {
-        var out = t48.deviceFromProtocolInfo(self, 0, protocol.defaultSpiClock(programmer, self.protocol_id));
+        const package = model.decodePackageDetails(self.package_details_raw);
+        var out = t48.deviceFromProtocolInfo(self, package.icsp, protocol.defaultSpiClock(programmer, self.protocol_id));
         out.can_adjust_clock = protocol.canAdjustClock(programmer, self.protocol_id);
         return out;
     }
@@ -54,9 +55,16 @@ pub const DeviceRecord = struct {
 
 pub const DeviceSummary = struct {
     name: []const u8,
+    aliases: []const []const u8,
+    chip_type: model.ChipType,
     code_memory_size: u32,
     data_memory_size: u32,
+    user_memory_size: u32,
     package_pins: u8,
+    page_size: u32,
+    chip_id: u32,
+    chip_id_bytes_count: u8,
+    blank_value: u8,
     supports_t48: bool,
     supports_t56: bool,
 };

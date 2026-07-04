@@ -8,6 +8,8 @@ The JavaScript layer owns WebUSB permissions, opening, configuration selection, 
 4. JS passes the transfer result back into Wasm.
 5. The loop repeats until Wasm reports completion.
 
+The high-level browser API serializes ROM operations per programmer connection. A second `readROM` or `writeROM` call on the same device throws `XgecuWebUSBError` with `code === "OperationInProgress"` until the first operation completes.
+
 Endpoint mapping:
 
 | Purpose | WebUSB call |
@@ -22,22 +24,24 @@ T56 block reads and writes use endpoint 1 according to the current protocol impl
 T56 transactions also require an algorithm bitstream. The Wasm ABI emits the T56 bitstream header transfer followed by the bitstream payload transfer before the normal begin-transaction packet. Catalog source records without a non-empty `t56AlgorithmHex` or `t56AlgorithmBase64` value are not advertised as T56-compatible.
 
 Supported programmer hardware is limited to T48/T56. The browser chooser filters by XGecu VID/PID, then the Wasm session probe rejects unsupported programmer models.
+The session probe also rejects bootloader mode before ROM operations begin.
 
 Example transfer loop shape:
 
 ```ts
-import { WasmBridge, createProgrammer, performWebUSBTransfer } from "xgecu-web";
+import { BrowserXgecuWebUSB, WasmBridge, performWebUSBTransfer } from "xgecu-web";
 
-const api = await createProgrammer();
-const programmer = await api.requestProgrammer();
 const wasm = await WasmBridge.load();
+const api = new BrowserXgecuWebUSB(wasm);
+const programmer = await api.requestProgrammer();
 
 try {
   const handle = wasm.startReadROM({
     programmer: "auto",
     device: "AT28C64B@DIP28",
     memory: "code",
-    skipIdCheck: false
+    skipIdCheck: false,
+    continueOnIdMismatch: false
   });
 
   const bytes = await wasm.runOperation(handle, (transfer) => {
@@ -52,4 +56,6 @@ try {
 
 Most browser apps should call `api.readROM()` and `api.writeROM()` instead of using this lower-level loop directly.
 
-`performWebUSBTransfer()` validates WebUSB transfer statuses and short writes. `WebUSBProgrammerConnection.close()` attempts to release interface 0 when this API claimed it, then closes the device even if interface release fails.
+`performWebUSBTransfer()` validates WebUSB transfer statuses, short writes, and short reads. `WebUSBProgrammerConnection.close()` attempts to release interface 0 when this API claimed it, then closes the device even if interface release fails.
+High-level browser APIs serialize ROM operations per programmer connection and throw package-owned `XgecuWebUSBError` objects for expected failures.
+Wasm operations send a final `end_transaction` transfer on normal completion and attempt a best-effort `end_transaction` during abort or transfer failure cleanup.

@@ -6,7 +6,11 @@ export {
   createProgrammer,
   performWebUSBTransfer
 } from "./webusb";
+export type { XgecuErrorCode } from "./errors";
+export type { UsbTransfer, UsbTransferHandler, RunOperationOptions } from "./wasm";
 export type {
+  ChipType,
+  DeviceDetail,
   DeviceListQuery,
   DeviceSummary,
   MemoryKind,
@@ -18,6 +22,9 @@ export type {
   USBInTransferResultLike,
   USBNavigatorLike,
   USBOutTransferResultLike,
+  RomOperationPhase,
+  RomProgressEvent,
+  RomProgressHandler,
   WriteROMOptions,
   XgecuWebUSB
 } from "./types";

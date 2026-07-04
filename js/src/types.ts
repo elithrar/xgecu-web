@@ -1,14 +1,24 @@
 export type ProgrammerKind = "auto" | "t48" | "t56";
 export type MemoryKind = "code" | "data" | "user";
+export type ChipType = "memory" | "mcu" | "pld" | "sram" | "logic" | "nand" | "emmc" | "vga";
 
 export interface DeviceSummary {
   name: string;
+  aliases: string[];
+  chipType: ChipType;
   codeMemorySize: number;
   dataMemorySize: number;
+  userMemorySize: number;
   packagePins: number;
+  pageSize: number;
+  chipId: number;
+  chipIdBytesCount: number;
+  blankValue: number;
   supportsT48: boolean;
   supportsT56: boolean;
 }
+
+export type DeviceDetail = DeviceSummary;
 
 export interface DeviceListQuery {
   search?: string;
@@ -36,6 +46,9 @@ export interface ReadROMOptions {
   memory?: MemoryKind;
   programmerKind?: ProgrammerKind;
   skipIdCheck?: boolean;
+  continueOnIdMismatch?: boolean;
+  signal?: AbortSignal;
+  onProgress?: RomProgressHandler;
 }
 
 export interface WriteROMOptions {
@@ -45,14 +58,33 @@ export interface WriteROMOptions {
   memory?: MemoryKind;
   programmerKind?: ProgrammerKind;
   erase?: boolean;
+  eraseNumFuses?: number;
+  erasePld?: number;
   verify?: boolean;
   skipIdCheck?: boolean;
+  continueOnIdMismatch?: boolean;
+  unprotectBefore?: boolean;
+  protectAfter?: boolean;
+  signal?: AbortSignal;
+  onProgress?: RomProgressHandler;
 }
+
+export type RomOperationPhase = "connecting" | "identifying" | "erasing" | "writing" | "reading" | "verifying" | "cleanup" | "done" | "failed";
+
+export interface RomProgressEvent {
+  phase: RomOperationPhase;
+  offset: number;
+  total: number;
+}
+
+export type RomProgressHandler = (event: RomProgressEvent) => void;
 
 export interface XgecuWebUSB {
   deviceList(query?: DeviceListQuery): DeviceSummary[];
+  resolveDevice(name: string, programmer?: ProgrammerKind): DeviceDetail | null;
   getProgrammers(): Promise<ProgrammerInfo[]>;
   requestProgrammer(): Promise<ProgrammerConnection>;
+  connectProgrammer(device: USBDeviceLike): Promise<ProgrammerConnection>;
   readROM(options: ReadROMOptions): Promise<Uint8Array>;
   writeROM(options: WriteROMOptions): Promise<void>;
 }

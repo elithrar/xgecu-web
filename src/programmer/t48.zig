@@ -135,6 +135,8 @@ pub fn endTransaction(trans: transport.Transport) Error!void {
 }
 
 pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u32, out: []u8) Error!void {
+    if (out.len > std.math.maxInt(u16)) return transport.Error.Io;
+
     var msg = [_]u8{0} ** packet.short_command_len;
     msg[0] = readCommand(kind);
     endian.storeInt(msg[2..4], out.len, .little);
@@ -144,6 +146,8 @@ pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u3
 }
 
 pub fn writeBlock(trans: transport.Transport, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
+    if (data.len > std.math.maxInt(u16)) return transport.Error.Io;
+
     var msg = [_]u8{0} ** packet.short_command_len;
     msg[0] = writeCommand(kind);
     endian.storeInt(msg[2..4], data.len, .little);

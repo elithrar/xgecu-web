@@ -172,10 +172,26 @@ describe("BrowserXgecuWebUSB", () => {
       memory: "code",
       data,
       erase: true,
+      eraseNumFuses: 0,
+      erasePld: 0,
       verify: true,
-      skipIdCheck: false
+      skipIdCheck: false,
+      continueOnIdMismatch: false,
+      unprotectBefore: false,
+      protectAfter: false
     });
     expect(runOperation).toHaveBeenCalledOnce();
+  });
+
+  it("rejects oversized writeROM data before starting Wasm operation", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    const startWriteROM = vi.spyOn(wasm, "startWriteROM");
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.writeROM({ programmer, device: "AT28C64B@DIP28", data: new Uint8Array(8193) })).rejects.toMatchObject({ code: "InputTooLarge" });
+    expect(startWriteROM).not.toHaveBeenCalled();
   });
 
   it("rejects empty writeROM data before starting Wasm operation", async () => {
@@ -188,11 +204,31 @@ describe("BrowserXgecuWebUSB", () => {
     await expect(api.writeROM({ programmer, device: "AT28C64B@DIP28", data: new Uint8Array() })).rejects.toThrow("must not be empty");
     expect(startWriteROM).not.toHaveBeenCalled();
   });
+
+  it("rejects concurrent ROM operations on one device", async () => {
+    const device = new FakeDevice();
+    let release!: () => void;
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "runOperation").mockImplementation(
+      () =>
+        new Promise<Uint8Array>((resolve) => {
+          release = () => resolve(new Uint8Array([0x42]));
+        })
+    );
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    const first = api.readROM({ programmer, device: "AT28C64B" });
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({ code: "OperationInProgress" });
+    release();
+    await first;
+  });
 });
 
 function fakeWasm(): WasmBridge {
   return {
-    deviceList: () => [{ name: "AT28C64B@DIP28", codeMemorySize: 8192, dataMemorySize: 0, packagePins: 28, supportsT48: true, supportsT56: false }],
+    deviceList: () => [fakeDeviceSummary()],
+    resolveDevice: () => fakeDeviceSummary(),
     startReadROM: () => 1,
     startWriteROM: () => 2,
     runOperation: async (_handle: number, performTransfer: UsbTransferHandler) => {
@@ -200,6 +236,24 @@ function fakeWasm(): WasmBridge {
       return new Uint8Array([0x42]);
     }
   } as unknown as WasmBridge;
+}
+
+function fakeDeviceSummary() {
+  return {
+    name: "AT28C64B@DIP28",
+    aliases: ["AT28C64B"],
+    chipType: "memory",
+    codeMemorySize: 8192,
+    dataMemorySize: 0,
+    userMemorySize: 0,
+    packagePins: 28,
+    pageSize: 64,
+    chipId: 0,
+    chipIdBytesCount: 0,
+    blankValue: 0xff,
+    supportsT48: true,
+    supportsT56: false
+  } as const;
 }
 
 function fakeUsb(device: FakeDevice): USBNavigatorLike {

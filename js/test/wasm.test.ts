@@ -15,7 +15,8 @@ describe("WasmBridge", () => {
         programmer: "t48",
         device: "missing",
         memory: "code",
-        skipIdCheck: false
+        skipIdCheck: false,
+        continueOnIdMismatch: false
       })
     ).toThrow("device not found");
   });
@@ -105,6 +106,7 @@ function fakeExports(): MutableWasmExports {
     }),
     mp_last_error_len: vi.fn(() => encoder.encode(fake.error).byteLength),
     mp_device_list: vi.fn(() => 0),
+    mp_device_detail: vi.fn(() => 0),
     mp_start_read_rom: vi.fn(() => 1),
     mp_start_write_rom: vi.fn(() => 2),
     mp_operation_next: vi.fn(() => {
@@ -119,6 +121,22 @@ function fakeExports(): MutableWasmExports {
       return 0;
     }),
     mp_operation_result: vi.fn(() => 0),
+    mp_operation_result_ptr: vi.fn(() => {
+      fake.writeMemory(512, fake.result);
+      return fake.result.byteLength === 0 ? 0 : 512;
+    }),
+    mp_operation_result_len: vi.fn(() => fake.result.byteLength),
+    mp_operation_error_ptr: vi.fn(() => {
+      const bytes = encoder.encode(fake.error);
+      fake.writeMemory(384, bytes);
+      return bytes.byteLength === 0 ? 0 : 384;
+    }),
+    mp_operation_error_len: vi.fn(() => encoder.encode(fake.error).byteLength),
+    mp_operation_error_code: vi.fn(() => 1),
+    mp_operation_abort: vi.fn(() => 0),
+    mp_operation_offset: vi.fn(() => 0),
+    mp_operation_total: vi.fn(() => 0),
+    mp_operation_phase: vi.fn(() => 8),
     mp_operation_destroy: vi.fn((_handle: number) => {})
   };
   return fake as MutableWasmExports;

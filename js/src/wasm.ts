@@ -1,5 +1,5 @@
-import { XgecuWebUSBError } from "./errors";
-import type { DeviceListQuery, DeviceSummary, MemoryKind, ProgrammerKind } from "./types";
+import { XgecuWebUSBError, xgecuErrorCodeFromAbi } from "./errors";
+import type { DeviceDetail, DeviceListQuery, DeviceSummary, MemoryKind, ProgrammerKind, RomProgressEvent, RomProgressHandler, RomOperationPhase } from "./types";
 
 export interface WasmExports {
   memory: WebAssembly.Memory;
@@ -10,7 +10,8 @@ export interface WasmExports {
   mp_last_error_ptr(): number;
   mp_last_error_len(): number;
   mp_device_list(queryPtr: number, queryLen: number, programmer: number, limit: number): number;
-  mp_start_read_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, skipIdCheck: number): number;
+  mp_device_detail(devicePtr: number, deviceLen: number, programmer: number): number;
+  mp_start_read_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, skipIdCheck: number, continueOnIdMismatch: number): number;
   mp_start_write_rom(
     programmer: number,
     devicePtr: number,
@@ -19,8 +20,13 @@ export interface WasmExports {
     dataPtr: number,
     dataLen: number,
     erase: number,
+    eraseNumFuses: number,
+    erasePld: number,
     verify: number,
-    skipIdCheck: number
+    skipIdCheck: number,
+    continueOnIdMismatch: number,
+    unprotectBefore: number,
+    protectAfter: number
   ): number;
   mp_operation_next(handle: number): number;
   mp_transfer_endpoint(handle: number): number;
@@ -28,6 +34,15 @@ export interface WasmExports {
   mp_transfer_len(handle: number): number;
   mp_operation_complete(handle: number, status: number, dataPtr: number, dataLen: number): number;
   mp_operation_result(handle: number): number;
+  mp_operation_result_ptr(handle: number): number;
+  mp_operation_result_len(handle: number): number;
+  mp_operation_error_ptr(handle: number): number;
+  mp_operation_error_len(handle: number): number;
+  mp_operation_error_code(handle: number): number;
+  mp_operation_abort(handle: number): number;
+  mp_operation_offset(handle: number): number;
+  mp_operation_total(handle: number): number;
+  mp_operation_phase(handle: number): number;
   mp_operation_destroy(handle: number): void;
 }
 
@@ -36,6 +51,11 @@ export type UsbTransfer =
   | { direction: "in"; endpoint: number; length: number };
 
 export type UsbTransferHandler = (transfer: UsbTransfer) => Promise<Uint8Array | void>;
+
+export interface RunOperationOptions {
+  signal?: AbortSignal;
+  onProgress?: RomProgressHandler;
+}
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -46,6 +66,7 @@ export class WasmBridge {
   static async load(wasmUrl?: string | URL): Promise<WasmBridge> {
     const url = wasmUrl ?? new URL(/* @vite-ignore */ "./xgecu_web.wasm", import.meta.url);
     const response = await fetch(url);
+    if (!response.ok) throw new XgecuWebUSBError(`Failed to load xgecu_web.wasm: HTTP ${response.status}.`);
     const module = await WebAssembly.instantiate(await response.arrayBuffer(), {});
     return new WasmBridge(module.instance.exports as unknown as WasmExports);
   }
@@ -59,7 +80,16 @@ export class WasmBridge {
     });
   }
 
-  startReadROM(options: { programmer: ProgrammerKind; device: string; memory: MemoryKind; skipIdCheck: boolean }): number {
+  resolveDevice(name: string, programmer: ProgrammerKind = "auto"): DeviceDetail | null {
+    const deviceBytes = textEncoder.encode(name);
+    return this.withBytes(deviceBytes, (devicePtr) => {
+      const rc = this.exports.mp_device_detail(devicePtr, deviceBytes.byteLength, programmerToAbi(programmer));
+      this.throwIfError(rc);
+      return JSON.parse(textDecoder.decode(this.resultBytes())) as DeviceDetail | null;
+    });
+  }
+
+  startReadROM(options: { programmer: ProgrammerKind; device: string; memory: MemoryKind; skipIdCheck: boolean; continueOnIdMismatch: boolean }): number {
     const deviceBytes = textEncoder.encode(options.device);
     return this.withBytes(deviceBytes, (devicePtr) => {
       const handle = this.exports.mp_start_read_rom(
@@ -67,7 +97,8 @@ export class WasmBridge {
         devicePtr,
         deviceBytes.byteLength,
         memoryToAbi(options.memory),
-        options.skipIdCheck ? 1 : 0
+        options.skipIdCheck ? 1 : 0,
+        options.continueOnIdMismatch ? 1 : 0
       );
       if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start readROM operation.");
       return handle;
@@ -80,8 +111,13 @@ export class WasmBridge {
     memory: MemoryKind;
     data: Uint8Array;
     erase: boolean;
+    eraseNumFuses: number;
+    erasePld: number;
     verify: boolean;
     skipIdCheck: boolean;
+    continueOnIdMismatch: boolean;
+    unprotectBefore: boolean;
+    protectAfter: boolean;
   }): number {
     const deviceBytes = textEncoder.encode(options.device);
     return this.withBytes(deviceBytes, (devicePtr) =>
@@ -94,8 +130,13 @@ export class WasmBridge {
           dataPtr,
           options.data.byteLength,
           options.erase ? 1 : 0,
+          options.eraseNumFuses,
+          options.erasePld,
           options.verify ? 1 : 0,
-          options.skipIdCheck ? 1 : 0
+          options.skipIdCheck ? 1 : 0,
+          options.continueOnIdMismatch ? 1 : 0,
+          options.unprotectBefore ? 1 : 0,
+          options.protectAfter ? 1 : 0
         );
         if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start writeROM operation.");
         return handle;
@@ -103,32 +144,60 @@ export class WasmBridge {
     );
   }
 
-  async runOperation(handle: number, performTransfer: UsbTransferHandler): Promise<Uint8Array> {
+  async runOperation(handle: number, performTransfer: UsbTransferHandler, options: RunOperationOptions = {}): Promise<Uint8Array> {
     try {
       for (;;) {
+        if (options.signal?.aborted) {
+          this.exports.mp_operation_abort(handle);
+          await this.drainCleanupBestEffort(handle, performTransfer);
+          throw new XgecuWebUSBError("Operation aborted.", "OperationAborted");
+        }
         const kind = this.exports.mp_operation_next(handle);
         if (kind === 0) {
           this.throwIfError(this.exports.mp_operation_result(handle));
-          return this.resultBytes().slice();
+          options.onProgress?.(this.operationProgress(handle));
+          return this.operationResultBytes(handle).slice();
         }
         if (kind === 1) {
           const endpoint = this.exports.mp_transfer_endpoint(handle);
           const data = this.memoryBytes(this.exports.mp_transfer_ptr(handle), this.exports.mp_transfer_len(handle)).slice();
-          await performTransfer({ direction: "out", endpoint, data });
-          this.throwIfError(this.exports.mp_operation_complete(handle, 0, 0, 0));
+          try {
+            await performTransfer({ direction: "out", endpoint, data });
+          } catch (error) {
+            await this.failTransferAndCleanupBestEffort(handle, performTransfer);
+            throw error;
+          }
+          const rc = this.exports.mp_operation_complete(handle, 0, 0, 0);
+          if (rc !== 0) {
+            await this.drainCleanupBestEffort(handle, performTransfer);
+            throw this.operationError(handle);
+          }
+          options.onProgress?.(this.operationProgress(handle));
           continue;
         }
         if (kind === 2) {
           const endpoint = this.exports.mp_transfer_endpoint(handle);
           const length = this.exports.mp_transfer_len(handle);
-          const result = await performTransfer({ direction: "in", endpoint, length });
+          let result: Uint8Array | void;
+          try {
+            result = await performTransfer({ direction: "in", endpoint, length });
+          } catch (error) {
+            await this.failTransferAndCleanupBestEffort(handle, performTransfer);
+            throw error;
+          }
           const bytes = result instanceof Uint8Array ? result : new Uint8Array();
+          let rc = 0;
           this.withBytes(bytes, (ptr) => {
-            this.throwIfError(this.exports.mp_operation_complete(handle, 0, ptr, bytes.byteLength));
+            rc = this.exports.mp_operation_complete(handle, 0, ptr, bytes.byteLength);
           });
+          if (rc !== 0) {
+            await this.drainCleanupBestEffort(handle, performTransfer);
+            throw this.operationError(handle);
+          }
+          options.onProgress?.(this.operationProgress(handle));
           continue;
         }
-        throw new XgecuWebUSBError(this.lastError() || "Wasm operation failed.");
+        throw this.operationError(handle);
       }
     } finally {
       this.exports.mp_operation_destroy(handle);
@@ -155,6 +224,10 @@ export class WasmBridge {
     return this.memoryBytes(this.exports.mp_result_ptr(), this.exports.mp_result_len());
   }
 
+  private operationResultBytes(handle: number): Uint8Array {
+    return this.memoryBytes(this.exports.mp_operation_result_ptr(handle), this.exports.mp_operation_result_len(handle));
+  }
+
   private lastError(): string {
     const ptr = this.exports.mp_last_error_ptr();
     const len = this.exports.mp_last_error_len();
@@ -165,6 +238,58 @@ export class WasmBridge {
   private throwIfError(rc: number): void {
     if (rc === 0) return;
     throw new XgecuWebUSBError(this.lastError() || "Wasm call failed.");
+  }
+
+  private operationError(handle: number): XgecuWebUSBError {
+    const code = this.exports.mp_operation_error_code(handle);
+    const ptr = this.exports.mp_operation_error_ptr(handle);
+    const len = this.exports.mp_operation_error_len(handle);
+    const message = ptr === 0 || len === 0 ? this.lastError() || "Wasm operation failed." : textDecoder.decode(this.memoryBytes(ptr, len));
+    return new XgecuWebUSBError(message, xgecuErrorCodeFromAbi(code));
+  }
+
+  private operationProgress(handle: number): RomProgressEvent {
+    return {
+      phase: phaseFromAbi(this.exports.mp_operation_phase(handle)),
+      offset: this.exports.mp_operation_offset(handle),
+      total: this.exports.mp_operation_total(handle)
+    };
+  }
+
+  private async failTransferAndCleanupBestEffort(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
+    this.exports.mp_operation_complete(handle, 1, 0, 0);
+    await this.drainCleanupBestEffort(handle, performTransfer);
+  }
+
+  private async drainCleanupBestEffort(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
+    try {
+      await this.drainCleanup(handle, performTransfer);
+    } catch {
+      // Cleanup is best effort after a failure or abort; preserve the original error.
+    }
+  }
+
+  private async drainCleanup(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
+    for (let step = 0; step < 4; step += 1) {
+      const kind = this.exports.mp_operation_next(handle);
+      if (kind === 0 || kind === 3) return;
+      if (kind === 1) {
+        const endpoint = this.exports.mp_transfer_endpoint(handle);
+        const data = this.memoryBytes(this.exports.mp_transfer_ptr(handle), this.exports.mp_transfer_len(handle)).slice();
+        await performTransfer({ direction: "out", endpoint, data });
+        this.exports.mp_operation_complete(handle, 0, 0, 0);
+        continue;
+      }
+      if (kind === 2) {
+        const endpoint = this.exports.mp_transfer_endpoint(handle);
+        const length = this.exports.mp_transfer_len(handle);
+        const result = await performTransfer({ direction: "in", endpoint, length });
+        const bytes = result instanceof Uint8Array ? result : new Uint8Array();
+        this.withBytes(bytes, (ptr) => {
+          this.exports.mp_operation_complete(handle, 0, ptr, bytes.byteLength);
+        });
+      }
+    }
   }
 }
 
@@ -187,5 +312,30 @@ export function memoryToAbi(memory: MemoryKind): number {
       return 1;
     case "user":
       return 2;
+  }
+}
+
+function phaseFromAbi(phase: number): RomOperationPhase {
+  switch (phase) {
+    case 1:
+      return "connecting";
+    case 2:
+      return "identifying";
+    case 3:
+      return "erasing";
+    case 4:
+      return "writing";
+    case 5:
+      return "reading";
+    case 6:
+      return "verifying";
+    case 7:
+      return "cleanup";
+    case 8:
+      return "done";
+    case 9:
+      return "failed";
+    default:
+      return "connecting";
   }
 }

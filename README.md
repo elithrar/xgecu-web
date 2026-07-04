@@ -46,29 +46,37 @@ zig build wasm -Doptimize=ReleaseSmall
 WebUSB requires a Chromium-based browser and a secure context: HTTPS or `localhost`.
 
 ```ts
-import { createProgrammer } from "xgecu-web";
+import { XgecuWebUSBError, createProgrammer, type ProgrammerConnection } from "xgecu-web";
 
 const api = await createProgrammer();
 
 const devices = api.deviceList({ search: "AT28", programmer: "t48" });
 console.log(devices);
 
-const programmer = await api.requestProgrammer();
-
+let programmer: ProgrammerConnection | undefined;
 try {
+  programmer = await api.requestProgrammer();
   const bytes = await api.readROM({
     programmer,
     device: "AT28C64B@DIP28",
-    memory: "code"
+    memory: "code",
+    onProgress: ({ phase, offset, total }) => {
+      console.log(`${phase}: ${offset}/${total}`);
+    }
   });
 
   console.log(`Read ${bytes.byteLength} bytes`);
+} catch (error) {
+  if (error instanceof XgecuWebUSBError) {
+    console.error(`${error.code}: ${error.message}`);
+  }
+  throw error;
 } finally {
-  await programmer.close();
+  await programmer?.close();
 }
 ```
 
-See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, read a ROM, download the readback, and write a selected binary image with erase + verify.
+See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, read a ROM, download the readback, and write a selected binary image with erase + verify after a backup and image-length check.
 
 For a complete browser example that backs up and writes a 28-pin EEPROM, see `docs/examples.md`.
 
@@ -118,8 +126,10 @@ The current JSON source is intentionally small seed data and should be expanded 
 
 - `writeROM` is destructive when `erase` is enabled.
 - Keep `verify: true` unless you have an external verification process.
-- Prefer `readROM` first to confirm WebUSB access and target selection.
+- Read and save a backup before writing.
+- Compare the patched image byte length with the readback byte length before writing.
 - Confirm the exact package/adapter before writing.
+- Leave chip ID checks enabled unless you have an independent target-identification step.
 - Browser permission prompts only grant access to the programmer; the library cannot detect an incorrectly inserted ROM.
 
 ### Credits
