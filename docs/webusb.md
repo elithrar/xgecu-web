@@ -30,9 +30,7 @@ import { BrowserXgecuWebUSB, WasmBridge, performWebUSBTransfer } from "xgecu-web
 
 const wasm = await WasmBridge.load();
 const api = new BrowserXgecuWebUSB(wasm);
-const requested = await api.requestProgrammer();
-if (requested.status === "error") throw requested.error;
-const programmer = requested.value;
+const programmer = await api.requestProgrammer();
 
 try {
   const handle = wasm.startReadROM({
@@ -55,4 +53,4 @@ try {
 Most browser apps should call `api.readROM()` and `api.writeROM()` instead of using this lower-level loop directly.
 
 `performWebUSBTransfer()` validates WebUSB transfer statuses and short writes. `WebUSBProgrammerConnection.close()` attempts to release interface 0 when this API claimed it, then closes the device even if interface release fails.
-High-level browser APIs serialize ROM operations per programmer connection and return `better-result` `Result` values for expected failures.
+High-level browser APIs serialize ROM operations per programmer connection and throw package-owned `XgecuWebUSBError` objects for expected failures.

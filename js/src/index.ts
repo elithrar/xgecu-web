@@ -26,6 +26,5 @@ export type {
   RomProgressEvent,
   RomProgressHandler,
   WriteROMOptions,
-  XgecuResult,
   XgecuWebUSB
 } from "./types";

@@ -1,11 +1,6 @@
-import type { Result } from "better-result";
-import type { XgecuWebUSBError } from "./errors";
-
 export type ProgrammerKind = "auto" | "t48" | "t56";
 export type MemoryKind = "code" | "data" | "user";
 export type ChipType = "memory" | "mcu" | "pld" | "sram" | "logic" | "nand" | "emmc" | "vga";
-
-export type XgecuResult<T> = Result<T, XgecuWebUSBError>;
 
 export interface DeviceSummary {
   name: string;
@@ -83,13 +78,13 @@ export interface RomProgressEvent {
 export type RomProgressHandler = (event: RomProgressEvent) => void;
 
 export interface XgecuWebUSB {
-  deviceList(query?: DeviceListQuery): XgecuResult<DeviceSummary[]>;
-  resolveDevice(name: string, programmer?: ProgrammerKind): XgecuResult<DeviceDetail | null>;
-  getProgrammers(): Promise<XgecuResult<ProgrammerInfo[]>>;
-  requestProgrammer(): Promise<XgecuResult<ProgrammerConnection>>;
-  connectProgrammer(device: USBDeviceLike): Promise<XgecuResult<ProgrammerConnection>>;
-  readROM(options: ReadROMOptions): Promise<XgecuResult<Uint8Array>>;
-  writeROM(options: WriteROMOptions): Promise<XgecuResult<void>>;
+  deviceList(query?: DeviceListQuery): DeviceSummary[];
+  resolveDevice(name: string, programmer?: ProgrammerKind): DeviceDetail | null;
+  getProgrammers(): Promise<ProgrammerInfo[]>;
+  requestProgrammer(): Promise<ProgrammerConnection>;
+  connectProgrammer(device: USBDeviceLike): Promise<ProgrammerConnection>;
+  readROM(options: ReadROMOptions): Promise<Uint8Array>;
+  writeROM(options: WriteROMOptions): Promise<void>;
 }
 
 export interface USBDeviceLike {

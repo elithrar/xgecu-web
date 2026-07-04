@@ -1,4 +1,5 @@
 import { Result } from "better-result";
+import type { Result as BetterResult } from "better-result";
 import { WebUSBTransferError, WebUSBUnavailableError, XgecuWebUSBError, xgecuErrorFromUnknown } from "./errors";
 import type {
   DeviceDetail,
@@ -10,7 +11,6 @@ import type {
   USBDeviceLike,
   USBNavigatorLike,
   WriteROMOptions,
-  XgecuResult,
   XgecuWebUSB
 } from "./types";
 import { WasmBridge } from "./wasm";
@@ -69,23 +69,23 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
     private readonly usb: USBNavigatorLike = requireWebUSB()
   ) {}
 
-  deviceList(query: DeviceListQuery = {}): XgecuResult<DeviceSummary[]> {
-    return resultFromThrowable(() => this.wasm.deviceList(query));
+  deviceList(query: DeviceListQuery = {}): DeviceSummary[] {
+    return unwrapInternal(resultFromThrowable(() => this.wasm.deviceList(query)));
   }
 
-  resolveDevice(name: string, programmer: DeviceListQuery["programmer"] = "auto"): XgecuResult<DeviceDetail | null> {
-    return resultFromThrowable(() => this.wasm.resolveDevice(name, programmer));
+  resolveDevice(name: string, programmer: DeviceListQuery["programmer"] = "auto"): DeviceDetail | null {
+    return unwrapInternal(resultFromThrowable(() => this.wasm.resolveDevice(name, programmer)));
   }
 
-  async getProgrammers(): Promise<XgecuResult<ProgrammerInfo[]>> {
-    return resultFromPromise(async () => {
+  async getProgrammers(): Promise<ProgrammerInfo[]> {
+    return unwrapInternal(await resultFromPromise(async () => {
       const devices = await this.usb.getDevices();
       return devices.filter(isSupportedUsbId).map(deviceInfo);
-    });
+    }));
   }
 
-  async requestProgrammer(): Promise<XgecuResult<ProgrammerConnection>> {
-    return resultFromPromise(async () => {
+  async requestProgrammer(): Promise<ProgrammerConnection> {
+    return unwrapInternal(await resultFromPromise(async () => {
       const device = await this.usb.requestDevice({
         filters: [{ vendorId: XGECU_VENDOR_ID, productId: XGECU_PRODUCT_ID }]
       });
@@ -94,20 +94,20 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       }
       await openAndClaim(device);
       return new WebUSBProgrammerConnection(device);
-    });
+    }));
   }
 
-  async connectProgrammer(device: USBDeviceLike): Promise<XgecuResult<ProgrammerConnection>> {
-    return resultFromPromise(async () => {
+  async connectProgrammer(device: USBDeviceLike): Promise<ProgrammerConnection> {
+    return unwrapInternal(await resultFromPromise(async () => {
       if (!isSupportedUsbId(device)) {
         throw new XgecuWebUSBError("USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
       }
       await openAndClaim(device);
       return new WebUSBProgrammerConnection(device);
-    });
+    }));
   }
 
-  async readROM(options: ReadROMOptions): Promise<XgecuResult<Uint8Array>> {
+  async readROM(options: ReadROMOptions): Promise<Uint8Array> {
     return withProgrammerOperation(options.programmer.device, async () => {
       await ensureReady(options.programmer.device);
       const handle = this.wasm.startReadROM({
@@ -124,8 +124,8 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
     });
   }
 
-  async writeROM(options: WriteROMOptions): Promise<XgecuResult<void>> {
-    if (options.data.byteLength === 0) return Result.err(new XgecuWebUSBError("writeROM data must not be empty.", "InputTooLarge"));
+  async writeROM(options: WriteROMOptions): Promise<void> {
+    if (options.data.byteLength === 0) throw new XgecuWebUSBError("writeROM data must not be empty.", "InputTooLarge");
     return withProgrammerOperation(options.programmer.device, async () => {
       await ensureReady(options.programmer.device);
       const handle = this.wasm.startWriteROM({
@@ -148,11 +148,11 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   }
 }
 
-export async function createProgrammer(options: { wasmUrl?: string | URL; usb?: USBNavigatorLike } = {}): Promise<XgecuResult<XgecuWebUSB>> {
-  return resultFromPromise(async () => {
+export async function createProgrammer(options: { wasmUrl?: string | URL; usb?: USBNavigatorLike } = {}): Promise<XgecuWebUSB> {
+  return unwrapInternal(await resultFromPromise(async () => {
     const wasm = await WasmBridge.load(options.wasmUrl);
     return new BrowserXgecuWebUSB(wasm, options.usb ?? requireWebUSB());
-  });
+  }));
 }
 
 export async function performWebUSBTransfer(device: USBDeviceLike, transfer: UsbTransfer): Promise<Uint8Array | void> {
@@ -213,21 +213,21 @@ function deviceInfo(device: USBDeviceLike): ProgrammerInfo {
   };
 }
 
-async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Promise<T>): Promise<XgecuResult<T>> {
+async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Promise<T>): Promise<T> {
   if (activeOperations.has(device)) {
-    return Result.err(new XgecuWebUSBError("A ROM operation is already in progress for this programmer.", "OperationInProgress"));
+    throw new XgecuWebUSBError("A ROM operation is already in progress for this programmer.", "OperationInProgress");
   }
   activeOperations.add(device);
   try {
-    return Result.ok(await task());
+    return unwrapInternal(Result.ok(await task()));
   } catch (error) {
-    return Result.err(xgecuErrorFromUnknown(error));
+    throw unwrapInternal(Result.err(xgecuErrorFromUnknown(error)));
   } finally {
     activeOperations.delete(device);
   }
 }
 
-async function resultFromPromise<T>(task: () => Promise<T>): Promise<XgecuResult<T>> {
+async function resultFromPromise<T>(task: () => Promise<T>): Promise<BetterResult<T, XgecuWebUSBError>> {
   try {
     return Result.ok(await task());
   } catch (error) {
@@ -235,12 +235,17 @@ async function resultFromPromise<T>(task: () => Promise<T>): Promise<XgecuResult
   }
 }
 
-function resultFromThrowable<T>(task: () => T): XgecuResult<T> {
+function resultFromThrowable<T>(task: () => T): BetterResult<T, XgecuWebUSBError> {
   try {
     return Result.ok(task());
   } catch (error) {
     return Result.err(xgecuErrorFromUnknown(error));
   }
+}
+
+function unwrapInternal<T>(result: BetterResult<T, XgecuWebUSBError>): T {
+  if (result.status === "error") throw result.error;
+  return result.value;
 }
 
 async function lifecycle(action: string, task: () => Promise<void>): Promise<void> {

@@ -18,11 +18,7 @@ function App() {
   useEffect(() => {
     createProgrammer()
       .then((created) => {
-        if (created.status === "error") {
-          setStatus(created.error.message);
-          return;
-        }
-        setApi(created.value);
+        setApi(created);
         setStatus("Ready. Connect a T48/T56 programmer to begin.");
       })
       .catch((error: unknown) => setStatus(error instanceof Error ? error.message : String(error)));
@@ -34,40 +30,47 @@ function App() {
     };
   }, [programmer]);
 
-  const deviceListResult = useMemo(() => api?.deviceList({ search: query, limit: 25 }), [api, query]);
-  const devices: DeviceSummary[] = deviceListResult?.status === "ok" ? deviceListResult.value : [];
+  const deviceList = useMemo(() => {
+    if (!api) return { devices: [] as DeviceSummary[], error: null as Error | null };
+    try {
+      return { devices: api.deviceList({ search: query, limit: 25 }), error: null };
+    } catch (error) {
+      return { devices: [] as DeviceSummary[], error: error instanceof Error ? error : new Error(String(error)) };
+    }
+  }, [api, query]);
+  const devices = deviceList.devices;
 
   useEffect(() => {
-    if (deviceListResult?.status === "error") setStatus(deviceListResult.error.message);
-  }, [deviceListResult]);
+    if (deviceList.error) setStatus(deviceList.error.message);
+  }, [deviceList.error]);
 
   async function connect() {
     if (!api) return;
     setStatus("Requesting WebUSB device...");
-    const result = await api.requestProgrammer();
-    if (result.status === "error") {
-      setStatus(result.error.message);
-      return;
+    try {
+      const connection = await api.requestProgrammer();
+      setProgrammer(connection);
+      setStatus(`Connected to ${connection.productName ?? "programmer"}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
     }
-    setProgrammer(result.value);
-    setStatus(`Connected to ${result.value.productName ?? "programmer"}.`);
   }
 
   async function readRom() {
     if (!api || !programmer) return;
     setStatus(`Reading ${selectedDevice}...`);
-    const result = await api.readROM({
-      programmer,
-      device: selectedDevice,
-      skipIdCheck,
-      onProgress: (event) => setStatus(`${event.phase}: ${event.offset}/${event.total} bytes`)
-    });
-    if (result.status === "error") {
-      setStatus(result.error.message);
-      return;
+    try {
+      const data = await api.readROM({
+        programmer,
+        device: selectedDevice,
+        skipIdCheck,
+        onProgress: (event) => setStatus(`${event.phase}: ${event.offset}/${event.total} bytes`)
+      });
+      setRom(data);
+      setStatus(`Read ${data.byteLength} bytes from ${selectedDevice}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
     }
-    setRom(result.value);
-    setStatus(`Read ${result.value.byteLength} bytes from ${selectedDevice}.`);
   }
 
   async function writeRom() {
@@ -77,20 +80,20 @@ function App() {
       return;
     }
     setStatus(`Writing ${writeImage.byteLength} bytes to ${selectedDevice}...`);
-    const result = await api.writeROM({
-      programmer,
-      device: selectedDevice,
-      data: writeImage,
-      erase: true,
-      verify: true,
-      skipIdCheck,
-      onProgress: (event) => setStatus(`${event.phase}: ${event.offset}/${event.total} bytes`)
-    });
-    if (result.status === "error") {
-      setStatus(result.error.message);
-      return;
+    try {
+      await api.writeROM({
+        programmer,
+        device: selectedDevice,
+        data: writeImage,
+        erase: true,
+        verify: true,
+        skipIdCheck,
+        onProgress: (event) => setStatus(`${event.phase}: ${event.offset}/${event.total} bytes`)
+      });
+      setStatus("Write and verify complete.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
     }
-    setStatus("Write and verify complete.");
   }
 
   async function onFileSelected(file: File | undefined) {
