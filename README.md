@@ -121,3 +121,7 @@ The current JSON source is intentionally small seed data and should be expanded 
 - Prefer `readROM` first to confirm WebUSB access and target selection.
 - Confirm the exact package/adapter before writing.
 - Browser permission prompts only grant access to the programmer; the library cannot detect an incorrectly inserted ROM.
+
+### Credits
+
+See [`attributions.md`](attributions.md) for credits, including the original `minipro` library and author.
