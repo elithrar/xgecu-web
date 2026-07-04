@@ -51,8 +51,12 @@ const State = enum {
     send_protect_on,
     send_read_cmd,
     recv_read_payload,
+    send_read_status,
+    recv_read_status,
     verify_send_read_cmd,
     verify_recv_read_payload,
+    verify_send_read_status,
+    verify_recv_read_status,
     send_final_end,
     send_abort_end,
     done,
@@ -367,12 +371,12 @@ fn nextTransfer(op: *Operation) !Transfer {
             writeBeginPacket(op);
             return outTransfer(op, endpoints.command, op.command[0..packet.begin_len]);
         },
-        .send_begin_status, .send_second_status, .send_write_status => {
+        .send_begin_status, .send_second_status, .send_write_status, .send_read_status, .verify_send_read_status => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.request_status;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .recv_begin_status, .recv_second_status, .recv_write_status => return inTransfer(endpoints.command, packet.status_len),
+        .recv_begin_status, .recv_second_status, .recv_write_status, .recv_read_status, .verify_recv_read_status => return inTransfer(endpoints.command, packet.status_len),
         .send_chip_id => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.read_id;
@@ -527,6 +531,11 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             if (source.len < len) return error.ShortRead;
             @memcpy(op.data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
+            op.state = if (op.programmer == .t48) .send_read_status else if (op.offset < op.data.len) .send_read_cmd else .send_final_end;
+        },
+        .send_read_status => op.state = .recv_read_status,
+        .recv_read_status => {
+            try checkStatus(data);
             op.state = if (op.offset < op.data.len) .send_read_cmd else .send_final_end;
         },
         .verify_send_read_cmd => op.state = .verify_recv_read_payload,
@@ -536,13 +545,12 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             if (source.len < len) return error.ShortRead;
             @memcpy(op.verify_data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
-            if (op.offset < op.verify_data.len) {
-                op.state = .verify_send_read_cmd;
-            } else if (std.mem.eql(u8, op.data, op.verify_data)) {
-                op.state = .send_final_end;
-            } else {
-                return error.VerifyFailed;
-            }
+            op.state = if (op.programmer == .t48) .verify_send_read_status else try afterVerifyReadStatus(op);
+        },
+        .verify_send_read_status => op.state = .verify_recv_read_status,
+        .verify_recv_read_status => {
+            try checkStatus(data);
+            op.state = try afterVerifyReadStatus(op);
         },
         .send_final_end => {
             op.transaction_open = false;
@@ -615,6 +623,12 @@ fn afterChipIdState(op: *Operation) State {
         .read => .send_read_cmd,
         .write => if (op.erase) .send_erase else if (op.unprotect_before) .send_protect_off else .send_write_cmd,
     };
+}
+
+fn afterVerifyReadStatus(op: *Operation) !State {
+    if (op.offset < op.verify_data.len) return .verify_send_read_cmd;
+    if (std.mem.eql(u8, op.data, op.verify_data)) return .send_final_end;
+    return error.VerifyFailed;
 }
 
 fn checkStatus(data: []const u8) !void {
@@ -809,8 +823,8 @@ fn phaseCode(state: State) u32 {
         .send_chip_id, .recv_chip_id => 2,
         .send_erase, .recv_erase, .send_end_after_erase => 3,
         .send_protect_off, .send_write_cmd, .send_write_payload, .send_write_status, .recv_write_status, .send_protect_on => 4,
-        .send_read_cmd, .recv_read_payload => 5,
-        .verify_send_read_cmd, .verify_recv_read_payload => 6,
+        .send_read_cmd, .recv_read_payload, .send_read_status, .recv_read_status => 5,
+        .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
         .send_final_end, .send_abort_end => 7,
         .done => 8,
         .failed => 9,
@@ -922,6 +936,9 @@ test "T48 Wasm write operation sequences erase write status and verify transfers
     try completeTransfer(&op, &.{});
     try expectNextTransfer(&op, .in, 2, 4); // T48 read payload endpoint
     try completeTransfer(&op, data);
+    try expectNextTransfer(&op, .out, 1, 8); // verify read status command
+    try completeTransfer(&op, &.{});
+    try completeTransfer(&op, &status);
     try expectNextTransfer(&op, .out, 1, 8); // final end transaction
     try completeTransfer(&op, &.{});
     try std.testing.expectEqual(State.done, op.state);

@@ -143,7 +143,7 @@ export class WasmBridge {
       for (;;) {
         if (options.signal?.aborted) {
           this.exports.mp_operation_abort(handle);
-          await this.drainCleanup(handle, performTransfer);
+          await this.drainCleanupBestEffort(handle, performTransfer);
           throw new XgecuWebUSBError("Operation aborted.", "OperationAborted");
         }
         const kind = this.exports.mp_operation_next(handle);
@@ -158,7 +158,7 @@ export class WasmBridge {
           try {
             await performTransfer({ direction: "out", endpoint, data });
           } catch (error) {
-            await this.failTransferAndCleanup(handle, performTransfer);
+            await this.failTransferAndCleanupBestEffort(handle, performTransfer);
             throw error;
           }
           const rc = this.exports.mp_operation_complete(handle, 0, 0, 0);
@@ -176,7 +176,7 @@ export class WasmBridge {
           try {
             result = await performTransfer({ direction: "in", endpoint, length });
           } catch (error) {
-            await this.failTransferAndCleanup(handle, performTransfer);
+            await this.failTransferAndCleanupBestEffort(handle, performTransfer);
             throw error;
           }
           const bytes = result instanceof Uint8Array ? result : new Uint8Array();
@@ -250,9 +250,17 @@ export class WasmBridge {
     };
   }
 
-  private async failTransferAndCleanup(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
+  private async failTransferAndCleanupBestEffort(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
     this.exports.mp_operation_complete(handle, 1, 0, 0);
-    await this.drainCleanup(handle, performTransfer);
+    await this.drainCleanupBestEffort(handle, performTransfer);
+  }
+
+  private async drainCleanupBestEffort(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
+    try {
+      await this.drainCleanup(handle, performTransfer);
+    } catch {
+      // Cleanup is best effort after a failure or abort; preserve the original error.
+    }
   }
 
   private async drainCleanup(handle: number, performTransfer: UsbTransferHandler): Promise<void> {

@@ -68,6 +68,7 @@ pub fn readROM(
     while (offset < out.len) {
         const len = @min(chunk_size, out.len - offset);
         try protocol.readBlock(info.programmer, trans, options.memory, @intCast(offset), out[offset .. offset + len]);
+        try checkReadStatus(info.programmer, trans);
         offset += len;
     }
     return out;
@@ -132,6 +133,7 @@ pub fn writeROM(
         while (offset < actual.len) {
             const len = @min(read_chunk, actual.len - offset);
             try protocol.readBlock(info.programmer, trans, options.memory, @intCast(offset), actual[offset .. offset + len]);
+            try checkReadStatus(info.programmer, trans);
             offset += len;
         }
         if (!std.mem.eql(u8, data, actual)) return Error.VerifyFailed;
@@ -174,6 +176,13 @@ fn readChunkSize(programmer: model.Programmer, descriptor: t48.Device) usize {
         @min(descriptor_chunk, protocol_bytes.packet.t56_read_payload_max)
     else
         descriptor_chunk;
+}
+
+fn checkReadStatus(programmer: model.Programmer, trans: transport_mod.Transport) Error!void {
+    if (programmer != .t48) return;
+    const status = try protocol.requestStatus(programmer, trans);
+    if (status.overcurrent != 0) return Error.Overcurrent;
+    if (status.error_code != 0) return Error.ProgrammerStatusError;
 }
 
 fn protectOff(programmer: model.Programmer, trans: transport_mod.Transport) Error!void {
