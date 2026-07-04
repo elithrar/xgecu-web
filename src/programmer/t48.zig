@@ -154,19 +154,19 @@ pub fn writeBlock(trans: transport.Transport, kind: model.MemoryKind, address: u
 
 pub fn readFuses(trans: transport.Transport, device: Device, kind: FuseKind, items_count: u8, out: []u8) Error!void {
     var msg = [_]u8{0} ** packet.fuse_len;
+    if (out.len > msg.len - packet.short_command_len) return transport.Error.Io;
     msg[0] = readFuseCommand(kind);
     msg[1] = device.protocol_id;
     msg[2] = items_count;
     endian.storeInt(msg[4..8], device.code_memory_size, .little);
     try trans.send(msg[0..packet.short_command_len]);
     _ = try trans.recv(&msg);
-    if (out.len > msg.len - 8) return transport.Error.Io;
     @memcpy(out, msg[8 .. 8 + out.len]);
 }
 
 pub fn writeFuses(trans: transport.Transport, device: Device, kind: FuseKind, items_count: u8, data: []const u8) Error!void {
     var msg = [_]u8{0} ** packet.fuse_len;
-    if (data.len > msg.len - 8) return transport.Error.Io;
+    if (data.len > msg.len - packet.short_command_len) return transport.Error.Io;
     msg[0] = writeFuseCommand(kind);
     msg[1] = device.protocol_id;
     msg[2] = items_count;
@@ -177,6 +177,8 @@ pub fn writeFuses(trans: transport.Transport, device: Device, kind: FuseKind, it
 
 pub fn readJedecRow(trans: transport.Transport, device: Device, row: JedecRow) Error!void {
     var msg = [_]u8{0} ** packet.jedec_read_len;
+    const byte_count = rowByteCount(row.size_bits);
+    if (row.data.len < byte_count) return transport.Error.Io;
     msg[0] = command.read_jedec;
     msg[1] = device.protocol_id;
     msg[2] = row.size_bits;
@@ -184,8 +186,6 @@ pub fn readJedecRow(trans: transport.Transport, device: Device, row: JedecRow) E
     msg[5] = row.flags;
     try trans.send(msg[0..packet.short_command_len]);
     _ = try trans.recv(&msg);
-    const byte_count = rowByteCount(row.size_bits);
-    if (row.data.len < byte_count) return transport.Error.Io;
     @memcpy(row.data[0..byte_count], msg[0..byte_count]);
 }
 
@@ -497,6 +497,16 @@ test "read fuses sends T48 fuse request and extracts response payload" {
     try std.testing.expectEqual(@as(u8, 3), fake.sent.items[2]);
     try std.testing.expectEqual(@as(u64, 0x1234), endian.loadInt(fake.sent.items[4..8], .little));
     try std.testing.expectEqualSlices(u8, &.{ 0xaa, 0x55 }, &out);
+}
+
+test "read fuses rejects oversized output before sending" {
+    var response = [_]u8{0} ** 1;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    var out = [_]u8{0} ** packet.fuse_len;
+    try std.testing.expectError(transport.Error.Io, readFuses(fake.transport(), testDevice(), .config, 3, &out));
+    try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
 }
 
 test "write fuses sends T48 fuse packet with firmware offset" {

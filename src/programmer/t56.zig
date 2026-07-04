@@ -47,6 +47,8 @@ pub fn endTransaction(trans: transport.Transport) Error!void {
 }
 
 pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u32, out: []u8) Error!void {
+    if (out.len > packet.t56_read_payload_max) return transport.Error.Io;
+
     var msg = [_]u8{0} ** packet.begin_len;
     msg[0] = readCommand(kind);
     endian.storeInt(msg[2..4], out.len, .little);
@@ -55,12 +57,13 @@ pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u3
 
     // Upstream asks for a slightly larger USB buffer to tolerate a T56 firmware off-by-one bug.
     var response = [_]u8{0} ** (packet.t56_read_payload_max + packet.t56_read_status_slop);
-    if (out.len > response.len - packet.t56_read_status_slop) return transport.Error.Io;
     _ = try trans.recv(response[0 .. out.len + packet.t56_read_status_slop]);
     @memcpy(out, response[0..out.len]);
 }
 
 pub fn writeBlock(trans: transport.Transport, device: Device, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
+    if (device.write_buffer_size > packet.t56_padded_write_payload_max or data.len > device.write_buffer_size) return transport.Error.Io;
+
     var msg = [_]u8{0} ** packet.short_command_len;
     msg[0] = writeCommand(kind);
     endian.storeInt(msg[2..4], data.len, .little);
@@ -68,20 +71,19 @@ pub fn writeBlock(trans: transport.Transport, device: Device, kind: model.Memory
     try trans.send(&msg);
 
     var buffer = [_]u8{0} ** packet.t56_padded_write_payload_max;
-    if (device.write_buffer_size > buffer.len or data.len > device.write_buffer_size) return transport.Error.Io;
     @memcpy(buffer[0..data.len], data);
     try trans.send(buffer[0..device.write_buffer_size]);
 }
 
 pub fn readFuses(trans: transport.Transport, device: Device, kind: FuseKind, items_count: u8, out: []u8) Error!void {
     var msg = [_]u8{0} ** packet.fuse_len;
+    if (out.len > msg.len - packet.short_command_len) return transport.Error.Io;
     msg[0] = readFuseCommand(kind);
     msg[1] = device.protocol_id;
     msg[2] = items_count;
     endian.storeInt(msg[4..8], device.code_memory_size, .little);
     try trans.send(msg[0..packet.short_command_len]);
     _ = try trans.recv(&msg);
-    if (out.len > msg.len - packet.short_command_len) return transport.Error.Io;
     @memcpy(out, msg[8 .. 8 + out.len]);
 }
 
@@ -140,6 +142,8 @@ pub fn protectOn(trans: transport.Transport) Error!void {
 
 pub fn readJedecRow(trans: transport.Transport, device: Device, row: JedecRow) Error!void {
     var msg = [_]u8{0} ** packet.jedec_read_len;
+    const byte_count = rowByteCount(row.size_bits);
+    if (row.data.len < byte_count) return transport.Error.Io;
     msg[0] = command.read_jedec;
     msg[1] = device.protocol_id;
     msg[2] = row.size_bits;
@@ -147,8 +151,6 @@ pub fn readJedecRow(trans: transport.Transport, device: Device, row: JedecRow) E
     msg[5] = row.flags;
     try trans.send(msg[0..packet.short_command_len]);
     _ = try trans.recv(&msg);
-    const byte_count = rowByteCount(row.size_bits);
-    if (row.data.len < byte_count) return transport.Error.Io;
     @memcpy(row.data[0..byte_count], msg[0..byte_count]);
 }
 
@@ -295,6 +297,38 @@ test "read and write T56 memory blocks" {
     try writeBlock(fake.transport(), device, .data, 0x20, &.{ 9, 8, 7 });
     try std.testing.expectEqualSlices(u8, &.{ 0x11, 0, 3, 0, 0x20, 0, 0, 0 }, fake.sent.items[8..16]);
     try std.testing.expectEqualSlices(u8, &.{ 9, 8, 7, 0, 0, 0, 0, 0 }, fake.sent.items[16..24]);
+}
+
+test "T56 memory blocks reject oversized buffers before sending" {
+    var response = [_]u8{0} ** 1;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    var out = [_]u8{0} ** (packet.t56_read_payload_max + 1);
+    try std.testing.expectError(transport.Error.Io, readBlock(fake.transport(), .code, 0, &out));
+
+    var device = Device{
+        .protocol_id = 0x07,
+        .variant = 0,
+        .voltages_raw = 0,
+        .chip_info = 0,
+        .pin_map = 0,
+        .data_memory_size = 0,
+        .data_memory2_size = 0,
+        .page_size = 0,
+        .pulse_delay = 0,
+        .code_memory_size = 0,
+        .package_details_raw = 0,
+        .read_buffer_size = 0,
+        .write_buffer_size = 2,
+        .flags_raw = 0,
+    };
+    try std.testing.expectError(transport.Error.Io, writeBlock(fake.transport(), device, .data, 0, &.{ 1, 2, 3 }));
+
+    device.write_buffer_size = packet.t56_padded_write_payload_max + 1;
+    try std.testing.expectError(transport.Error.Io, writeBlock(fake.transport(), device, .data, 0, &.{1}));
+
+    try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
 }
 
 test "read and write T56 fuses and chip ID" {
