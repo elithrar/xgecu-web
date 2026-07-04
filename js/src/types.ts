@@ -69,6 +69,7 @@ export interface USBDeviceLike {
   close(): Promise<void>;
   selectConfiguration(configurationValue: number): Promise<void>;
   claimInterface(interfaceNumber: number): Promise<void>;
+  releaseInterface?(interfaceNumber: number): Promise<void>;
   transferOut(endpointNumber: number, data: BufferSource): Promise<USBOutTransferResultLike>;
   transferIn(endpointNumber: number, length: number): Promise<USBInTransferResultLike>;
 }

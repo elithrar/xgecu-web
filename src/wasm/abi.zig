@@ -23,7 +23,8 @@ const OpKind = enum {
 const State = enum {
     send_info,
     recv_info,
-    send_t56_bitstream,
+    send_t56_bitstream_header,
+    send_t56_bitstream_payload,
     send_begin,
     send_begin_status,
     recv_begin_status,
@@ -32,7 +33,8 @@ const State = enum {
     send_erase,
     recv_erase,
     send_end_after_erase,
-    send_second_t56_bitstream,
+    send_second_t56_bitstream_header,
+    send_second_t56_bitstream_payload,
     send_second_begin,
     send_second_status,
     recv_second_status,
@@ -139,11 +141,11 @@ export fn mp_device_list(query_ptr: u32, query_len: u32, programmer_value: u32, 
 }
 
 export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, skip_id_check: u32) u32 {
-    const programmer = programmerFromAbi(programmer_value) catch return 0;
-    const memory = memoryFromAbi(memory_value) catch return 0;
+    const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
+    const memory = memoryFromAbi(memory_value) catch return failStart("invalid memory kind");
     const device_name = sliceConst(device_ptr, device_len);
-    const device = catalog.find(device_name, programmer) catch return 0;
-    const op = allocator().create(Operation) catch return 0;
+    const device = catalog.find(device_name, programmer) catch return failStart("device not found or unsupported by requested programmer");
+    const op = allocator().create(Operation) catch return failStart("out of memory");
     op.* = .{
         .kind = .read,
         .requested_programmer = programmer,
@@ -156,14 +158,14 @@ export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: 
 }
 
 export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, verify: u32, skip_id_check: u32) u32 {
-    const programmer = programmerFromAbi(programmer_value) catch return 0;
-    const memory = memoryFromAbi(memory_value) catch return 0;
+    const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
+    const memory = memoryFromAbi(memory_value) catch return failStart("invalid memory kind");
     const device_name = sliceConst(device_ptr, device_len);
-    const device = catalog.find(device_name, programmer) catch return 0;
-    const data = allocator().dupe(u8, sliceConst(data_ptr, data_len)) catch return 0;
+    const device = catalog.find(device_name, programmer) catch return failStart("device not found or unsupported by requested programmer");
+    const data = allocator().dupe(u8, sliceConst(data_ptr, data_len)) catch return failStart("out of memory");
     const op = allocator().create(Operation) catch {
         allocator().free(data);
-        return 0;
+        return failStart("out of memory");
     };
     op.* = .{
         .kind = .write,
@@ -241,10 +243,18 @@ fn nextTransfer(op: *Operation) !Transfer {
             return outTransfer(op, 1, op.command[0..5]);
         },
         .recv_info => return inTransfer(1, 80),
-        .send_t56_bitstream, .send_second_t56_bitstream => {
+        .send_t56_bitstream_header, .send_second_t56_bitstream_header => {
             @memset(op.command[0..8], 0);
             op.command[0] = 0x26;
+            const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
+            if (bitstream.len == 0) return error.AlgorithmUnavailable;
+            endian.storeInt(op.command[4..8], bitstream.len, .little);
             return outTransfer(op, 1, op.command[0..8]);
+        },
+        .send_t56_bitstream_payload, .send_second_t56_bitstream_payload => {
+            const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
+            if (bitstream.len == 0) return error.AlgorithmUnavailable;
+            return outTransfer(op, 1, bitstream);
         },
         .send_begin, .send_second_begin => {
             writeBeginPacket(op);
@@ -316,6 +326,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             const info = session.parseSystemInfo(data) orelse return error.UnsupportedProgrammer;
             if (info.programmer != .t48 and info.programmer != .t56) return error.UnsupportedProgrammer;
             if (op.requested_programmer != .auto and op.requested_programmer != info.programmer) return error.ProgrammerMismatch;
+            if (!op.device.supports(info.programmer)) return error.UnsupportedProgrammer;
             op.programmer = info.programmer;
             op.descriptor = op.device.descriptor(info.programmer);
             if (op.kind == .read) {
@@ -326,9 +337,10 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 if (op.data.len > memorySize(op.device, op.memory)) return error.InputTooLarge;
                 if (op.verify) op.verify_data = try allocator().alloc(u8, op.data.len);
             }
-            op.state = if (op.programmer == .t56) .send_t56_bitstream else .send_begin;
+            op.state = if (op.programmer == .t56) .send_t56_bitstream_header else .send_begin;
         },
-        .send_t56_bitstream => op.state = .send_begin,
+        .send_t56_bitstream_header => op.state = .send_t56_bitstream_payload,
+        .send_t56_bitstream_payload => op.state = .send_begin,
         .send_begin => op.state = .send_begin_status,
         .send_begin_status => op.state = .recv_begin_status,
         .recv_begin_status => {
@@ -342,8 +354,9 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_erase => op.state = .recv_erase,
         .recv_erase => op.state = .send_end_after_erase,
-        .send_end_after_erase => op.state = if (op.programmer == .t56) .send_second_t56_bitstream else .send_second_begin,
-        .send_second_t56_bitstream => op.state = .send_second_begin,
+        .send_end_after_erase => op.state = if (op.programmer == .t56) .send_second_t56_bitstream_header else .send_second_begin,
+        .send_second_t56_bitstream_header => op.state = .send_second_t56_bitstream_payload,
+        .send_second_t56_bitstream_payload => op.state = .send_second_begin,
         .send_second_begin => op.state = .send_second_status,
         .send_second_status => op.state = .recv_second_status,
         .recv_second_status => {
@@ -544,8 +557,14 @@ fn errorCode(err: anyerror) u32 {
         error.Overcurrent => 14,
         error.ProgrammerStatusError => 15,
         error.VerifyFailed => 16,
+        error.AlgorithmUnavailable => 17,
         else => 1,
     };
+}
+
+fn failStart(message: []const u8) u32 {
+    _ = setError(message);
+    return 0;
 }
 
 test "device list ABI returns JSON" {

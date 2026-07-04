@@ -11,6 +11,8 @@ function App() {
   const [selectedDevice, setSelectedDevice] = useState("AT28C64B@DIP28");
   const [rom, setRom] = useState<Uint8Array | null>(null);
   const [writeImage, setWriteImage] = useState<Uint8Array | null>(null);
+  const [skipIdCheck, setSkipIdCheck] = useState(false);
+  const [confirmWrite, setConfirmWrite] = useState(false);
   const [status, setStatus] = useState("Loading Wasm...");
 
   useEffect(() => {
@@ -35,13 +37,13 @@ function App() {
   async function readRom() {
     if (!api || !programmer) return;
     setStatus(`Reading ${selectedDevice}...`);
-    const data = await api.readROM({ programmer, device: selectedDevice, skipIdCheck: true });
+    const data = await api.readROM({ programmer, device: selectedDevice, skipIdCheck });
     setRom(data);
     setStatus(`Read ${data.byteLength} bytes from ${selectedDevice}.`);
   }
 
   async function writeRom() {
-    if (!api || !programmer || !writeImage) return;
+    if (!api || !programmer || !writeImage || !confirmWrite) return;
     setStatus(`Writing ${writeImage.byteLength} bytes to ${selectedDevice}...`);
     await api.writeROM({
       programmer,
@@ -49,7 +51,7 @@ function App() {
       data: writeImage,
       erase: true,
       verify: true,
-      skipIdCheck: true
+      skipIdCheck
     });
     setStatus("Write and verify complete.");
   }
@@ -108,7 +110,15 @@ function App() {
           ROM image to write
           <input type="file" onChange={(event) => void onFileSelected(event.currentTarget.files?.[0])} />
         </label>
-        <button disabled={!api || !programmer || !writeImage} onClick={() => void writeRom()}>
+        <label className="checkbox">
+          <input type="checkbox" checked={skipIdCheck} onChange={(event) => setSkipIdCheck(event.currentTarget.checked)} />
+          Skip chip ID check when metadata does not match or no ID is available
+        </label>
+        <label className="checkbox warning">
+          <input type="checkbox" checked={confirmWrite} onChange={(event) => setConfirmWrite(event.currentTarget.checked)} />
+          I understand writing will erase/program the selected ROM
+        </label>
+        <button disabled={!api || !programmer || !writeImage || !confirmWrite} onClick={() => void writeRom()}>
           Write ROM with erase + verify
         </button>
       </section>

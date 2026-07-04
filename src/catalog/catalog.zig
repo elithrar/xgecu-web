@@ -33,14 +33,22 @@ pub const DeviceRecord = struct {
     chip_id: u32 = 0,
     chip_id_bytes_count: u8 = 0,
     blank_value: u8 = 0xff,
-    t56_algorithm: []const u8 = &.{},
+    t56_algorithm: ?[]const u8 = null,
 
     pub fn supports(self: DeviceRecord, programmer: model.Programmer) bool {
         if (programmer == .auto) return true;
+        if (programmer == .t56 and self.t56_algorithm == null) return false;
         for (self.programmers) |entry| {
             if (entry == programmer) return true;
         }
         return false;
+    }
+
+    pub fn algorithmFor(self: DeviceRecord, programmer: model.Programmer) ?[]const u8 {
+        return switch (programmer) {
+            .t56 => self.t56_algorithm,
+            else => null,
+        };
     }
 
     pub fn descriptor(self: DeviceRecord, programmer: model.Programmer) t48.Device {
@@ -185,14 +193,16 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 test "find resolves aliases and programmer support" {
     const device = try find("at28c64b", .t48);
     try std.testing.expectEqualStrings("AT28C64B@DIP28", device.canonical_name);
-    try std.testing.expect(device.supports(.t56));
+    try std.testing.expect(!device.supports(.t56));
     try std.testing.expectError(Error.DeviceNotFound, find("missing", .t48));
+    try std.testing.expectError(Error.DeviceNotFound, find("at28c64b", .t56));
 }
 
 test "list filters by query" {
-    const found = try list(std.testing.allocator, "w25", .t56, 10);
+    const found = try list(std.testing.allocator, "w25", .t48, 10);
     defer std.testing.allocator.free(found);
     try std.testing.expectEqual(@as(usize, 1), found.len);
     try std.testing.expectEqualStrings("W25Q32JV@SOIC8", found[0].name);
     try std.testing.expect(found[0].supports_t48);
+    try std.testing.expect(!found[0].supports_t56);
 }

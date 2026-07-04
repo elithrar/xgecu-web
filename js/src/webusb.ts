@@ -46,7 +46,9 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
   }
 
   async close(): Promise<void> {
-    if (this.device.opened) await this.device.close();
+    if (!this.device.opened) return;
+    await this.device.releaseInterface?.(INTERFACE_NUMBER);
+    await this.device.close();
   }
 }
 

@@ -27,6 +27,7 @@ class FakeDevice implements USBDeviceLike {
   }
 
   claimInterface = vi.fn(async (_interfaceNumber: number) => {});
+  releaseInterface = vi.fn(async (_interfaceNumber: number) => {});
 
   async transferOut(endpointNumber: number, data: BufferSource) {
     this.out.push({ endpoint: endpointNumber, data: new Uint8Array(data instanceof ArrayBuffer ? data : data.buffer).slice() });
@@ -67,6 +68,19 @@ describe("BrowserXgecuWebUSB", () => {
     expect(programmer.opened).toBe(true);
     expect(device.configuration).toEqual({ configurationValue: 1 });
     expect(device.claimInterface).toHaveBeenCalledWith(0);
+  });
+
+  it("releases the claimed interface before closing", async () => {
+    const device = new FakeDevice();
+    const programmer = await new BrowserXgecuWebUSB(fakeWasm(), {
+      requestDevice: vi.fn(async () => device),
+      getDevices: vi.fn(async () => [device])
+    }).requestProgrammer();
+
+    await programmer.close();
+
+    expect(device.releaseInterface).toHaveBeenCalledWith(0);
+    expect(device.opened).toBe(false);
   });
 
   it("routes readROM through the Wasm operation runner", async () => {

@@ -39,6 +39,7 @@ pub fn begin(
         },
         .t56 => {
             const source = t56_bitstream orelse return Error.AlgorithmUnavailable;
+            if (source.len == 0) return Error.AlgorithmUnavailable;
             const owned = try allocator.dupe(u8, source);
             errdefer allocator.free(owned);
             try t56.beginTransaction(trans, descriptor, owned);
@@ -127,4 +128,27 @@ test "protocol rejects unsupported programmer at dispatch boundary" {
     defer fake.deinit();
     var out = [_]u8{0} ** 1;
     try std.testing.expectError(Error.UnsupportedProgrammer, readBlock(.auto, fake.transport(), .code, 0, &out));
+}
+
+test "T56 begin requires a non-empty algorithm bitstream" {
+    var fake = transport.FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+    const device = t48.Device{
+        .protocol_id = 0,
+        .variant = 0,
+        .voltages_raw = 0,
+        .chip_info = 0,
+        .pin_map = 0,
+        .data_memory_size = 0,
+        .data_memory2_size = 0,
+        .page_size = 0,
+        .pulse_delay = 0,
+        .code_memory_size = 0,
+        .package_details_raw = 0,
+        .read_buffer_size = 0,
+        .write_buffer_size = 0,
+        .flags_raw = 0,
+    };
+    try std.testing.expectError(Error.AlgorithmUnavailable, begin(std.testing.allocator, .t56, fake.transport(), device, null));
+    try std.testing.expectError(Error.AlgorithmUnavailable, begin(std.testing.allocator, .t56, fake.transport(), device, &.{}));
 }

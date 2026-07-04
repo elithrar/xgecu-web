@@ -27,6 +27,21 @@ label {
   font-weight: 600;
 }
 
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+}
+
+.checkbox input {
+  width: auto;
+}
+
+.warning {
+  color: #9f2d20;
+}
+
 input,
 select,
 button,

@@ -34,8 +34,7 @@ Reads a memory region from the selected target.
 const data = await api.readROM({
   programmer,
   device: "AT28C64B@DIP28",
-  memory: "code",
-  skipIdCheck: true
+  memory: "code"
 });
 ```
 
@@ -49,9 +48,9 @@ await api.writeROM({
   device: "AT28C64B@DIP28",
   data,
   erase: true,
-  verify: true,
-  skipIdCheck: true
+  verify: true
 });
 ```
 
 `erase` and `verify` default to `true`.
+`skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.

@@ -55,8 +55,7 @@ const programmer = await api.requestProgrammer();
 const bytes = await api.readROM({
   programmer,
   device: "AT28C64B@DIP28",
-  memory: "code",
-  skipIdCheck: true
+  memory: "code"
 });
 
 await api.writeROM({
@@ -64,8 +63,7 @@ await api.writeROM({
   device: "AT28C64B@DIP28",
   data: bytes,
   erase: true,
-  verify: true,
-  skipIdCheck: true
+  verify: true
 });
 ```
 
@@ -96,6 +94,12 @@ defer allocator.free(bytes);
 - `src/wasm/abi.zig` exposes a browser-oriented ABI where JavaScript drives one WebUSB transfer at a time.
 - `js/src/webusb.ts` maps ABI transfer requests to `USBDevice.transferOut()` and `USBDevice.transferIn()`.
 - `src/catalog/catalog.zig` is a static browser catalog. It is shaped for generated T48/T56-only device metadata.
+
+## Chip catalog
+
+The runtime SQLite database has been removed. Browser builds use the static catalog embedded in `src/catalog/catalog.zig`.
+
+Each `DeviceRecord` contains the protocol fields needed by the T48/T56 packet layer. T56 entries must also include a non-empty `t56_algorithm` payload; entries without that payload do not advertise T56 support and will be rejected if a T56 programmer is auto-detected. The current catalog is intentionally small seed data and should be replaced by generated T48/T56-only metadata before broad device support is published.
 
 ## Hardware safety
 

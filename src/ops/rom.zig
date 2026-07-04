@@ -51,7 +51,7 @@ pub fn readROM(
     errdefer allocator.free(out);
 
     const descriptor = device.descriptor(info.programmer);
-    const ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.t56_algorithm);
+    const ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
     defer ctx.deinit(allocator);
     defer protocol.end(info.programmer, trans);
 
@@ -85,7 +85,7 @@ pub fn writeROM(
 
     const descriptor = device.descriptor(info.programmer);
     var protocol_open = false;
-    const first_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.t56_algorithm);
+    const first_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
     defer first_ctx.deinit(allocator);
     protocol_open = true;
     defer if (protocol_open) protocol.end(info.programmer, trans);
@@ -101,7 +101,7 @@ pub fn writeROM(
         try protocol.erase(info.programmer, trans, 0, 0);
         protocol.end(info.programmer, trans);
         protocol_open = false;
-        second_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.t56_algorithm);
+        second_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
         protocol_open = true;
     }
 

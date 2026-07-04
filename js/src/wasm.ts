@@ -69,7 +69,7 @@ export class WasmBridge {
         memoryToAbi(options.memory),
         options.skipIdCheck ? 1 : 0
       );
-      if (handle === 0) throw new XgecuWebUSBError("Failed to start readROM operation.");
+      if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start readROM operation.");
       return handle;
     });
   }
@@ -97,7 +97,7 @@ export class WasmBridge {
           options.verify ? 1 : 0,
           options.skipIdCheck ? 1 : 0
         );
-        if (handle === 0) throw new XgecuWebUSBError("Failed to start writeROM operation.");
+        if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start writeROM operation.");
         return handle;
       })
     );
