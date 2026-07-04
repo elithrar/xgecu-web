@@ -12,6 +12,7 @@ pub const Error = catalog.Error || protocol.Error || error{
     UnsupportedProgrammer,
     ChipIdMismatch,
     VerifyFailed,
+    InputEmpty,
 };
 
 pub const ReadOptions = struct {
@@ -77,6 +78,7 @@ pub fn writeROM(
     data: []const u8,
     options: WriteOptions,
 ) Error!void {
+    if (data.len == 0) return Error.InputEmpty;
     const info = try openSupportedSession(trans, options.programmer);
     const device = try catalog.find(device_name, info.programmer);
     const size = memorySize(device, options.memory);
@@ -204,4 +206,52 @@ test "readROM uses session, begin transaction, and chunked reads" {
     defer std.testing.allocator.free(bytes);
     try std.testing.expectEqual(@as(usize, 8192), bytes.len);
     try std.testing.expectEqual(@as(u8, 0xaa), bytes[0]);
+}
+
+test "writeROM rejects empty data before touching transport" {
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+
+    try std.testing.expectError(Error.InputEmpty, writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &.{}, .{ .programmer = .t48 }));
+    try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
+}
+
+test "writeROM uses T48 erase write status and verify sequence" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[5] = 2;
+    response[6] = 7;
+    @memcpy(response[8..24], "2026-07-04......");
+    response[12] = 0;
+    @memcpy(response[24..32], "T48CODE!");
+    @memcpy(response[32..54], "SERIAL-T48-00000000000");
+    var verify_payload = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    fake.payload_response = &verify_payload;
+    defer fake.deinit();
+
+    try writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &verify_payload, .{ .programmer = .t48, .skip_id_check = true });
+
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, 0x0e) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, 0x0c) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, 0x0d) != null);
+    try std.testing.expectEqualSlices(u8, &verify_payload, fake.payload_sent.items);
+}
+
+test "writeROM reports verify mismatch for T48" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[5] = 2;
+    response[6] = 7;
+    @memcpy(response[8..24], "2026-07-04......");
+    response[12] = 0;
+    @memcpy(response[24..32], "T48CODE!");
+    @memcpy(response[32..54], "SERIAL-T48-00000000000");
+    var verify_payload = [_]u8{ 0xff, 0xff, 0xff, 0xff };
+    var data = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    fake.payload_response = &verify_payload;
+    defer fake.deinit();
+
+    try std.testing.expectError(Error.VerifyFailed, writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &data, .{ .programmer = .t48, .skip_id_check = true }));
 }

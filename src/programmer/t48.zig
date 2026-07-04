@@ -33,6 +33,7 @@ const t48_request_status = 0x39;
 pub const Error = transport.Error || logic.Error || error{
     UnknownMemoryKind,
     Overcurrent,
+    ProgrammerStatusError,
 };
 
 pub const Device = struct {
@@ -139,6 +140,7 @@ pub fn beginTransaction(trans: transport.Transport, device: Device) Error!void {
     try trans.send(&msg);
     const status = try requestStatus(trans);
     if (status.overcurrent != 0) return Error.Overcurrent;
+    if (status.error_code != 0) return Error.ProgrammerStatusError;
 }
 
 pub fn endTransaction(trans: transport.Transport) Error!void {
@@ -246,6 +248,8 @@ pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
     try trans.send(&msg);
     var response = [_]u8{0} ** 64;
     _ = try trans.recv(&response);
+    if (response[12] != 0) return Error.Overcurrent;
+    if (response[0] != 0) return Error.ProgrammerStatusError;
 }
 
 pub fn protectOff(trans: transport.Transport) Error!void {
@@ -360,6 +364,15 @@ test "begin transaction sends upstream T48 packet fields" {
     try std.testing.expectEqual(@as(u8, t48_request_status), fake.sent.items[64]);
 }
 
+test "begin transaction rejects T48 programmer status errors" {
+    var status_response = [_]u8{0} ** 32;
+    status_response[0] = 1;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &status_response);
+    defer fake.deinit();
+
+    try std.testing.expectError(Error.ProgrammerStatusError, beginTransaction(fake.transport(), testDevice()));
+}
+
 test "read and write block use T48 commands and payload API" {
     var response = [_]u8{0} ** 32;
     var payload = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
@@ -426,6 +439,19 @@ test "erase sends T48 erase packet and consumes response" {
     try std.testing.expectEqual(@as(u8, t48_erase), fake.sent.items[0]);
     try std.testing.expectEqual(@as(u8, 2), fake.sent.items[2]);
     try std.testing.expectEqual(@as(u8, 1), fake.sent.items[4]);
+}
+
+test "erase rejects T48 status and overcurrent responses" {
+    var response = [_]u8{0} ** 64;
+    response[0] = 1;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+    try std.testing.expectError(Error.ProgrammerStatusError, erase(fake.transport(), 0, 0));
+
+    response[0] = 0;
+    response[12] = 1;
+    fake.response = &response;
+    try std.testing.expectError(Error.Overcurrent, erase(fake.transport(), 0, 0));
 }
 
 test "protect commands send upstream T48 opcodes" {
@@ -614,4 +640,23 @@ test "deviceFromProtocolInfo maps DB fields into T48 descriptor" {
     try std.testing.expectEqual(@as(u8, 4), device.spi_clock);
     try std.testing.expect(device.can_adjust_clock);
     try std.testing.expectEqual(@as(u32, 8192), device.code_memory_size);
+}
+
+fn testDevice() Device {
+    return .{
+        .protocol_id = 0x07,
+        .variant = 0,
+        .voltages_raw = 0,
+        .chip_info = 0,
+        .pin_map = 0,
+        .data_memory_size = 0,
+        .data_memory2_size = 0,
+        .page_size = 0,
+        .pulse_delay = 0,
+        .code_memory_size = 0,
+        .package_details_raw = 0,
+        .read_buffer_size = 0,
+        .write_buffer_size = 0,
+        .flags_raw = 0,
+    };
 }

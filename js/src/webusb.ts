@@ -97,6 +97,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   }
 
   async writeROM(options: WriteROMOptions): Promise<void> {
+    if (options.data.byteLength === 0) throw new XgecuWebUSBError("writeROM data must not be empty.");
     await ensureReady(options.programmer.device);
     const handle = this.wasm.startWriteROM({
       programmer: options.programmerKind ?? "auto",

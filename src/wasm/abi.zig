@@ -164,6 +164,7 @@ export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: 
 }
 
 export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, verify: u32, skip_id_check: u32) u32 {
+    if (data_len == 0) return failStart("input data is empty");
     const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
     const memory = memoryFromAbi(memory_value) catch return failStart("invalid memory kind");
     const device_name = sliceConst(device_ptr, device_len);
@@ -361,7 +362,10 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             op.state = afterChipIdState(op);
         },
         .send_erase => op.state = .recv_erase,
-        .recv_erase => op.state = .send_end_after_erase,
+        .recv_erase => {
+            try checkStatus(data);
+            op.state = .send_end_after_erase;
+        },
         .send_end_after_erase => op.state = if (op.programmer == .t56) .send_second_t56_bitstream_header else .send_second_begin,
         .send_second_t56_bitstream_header => op.state = .send_second_t56_bitstream_payload,
         .send_second_t56_bitstream_payload => op.state = .send_second_begin,
@@ -615,6 +619,88 @@ test "JSON string writer escapes generated catalog names" {
     try std.testing.expectEqualStrings("\"A\\\"B\\\\C\\n\"", bytes);
 }
 
+test "Wasm start write rejects empty input before operation allocation" {
+    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 0, 1, 1, 0);
+    try std.testing.expectEqual(@as(u32, 0), rc);
+    try std.testing.expectEqualStrings("input data is empty", last_error);
+}
+
+test "T48 Wasm write operation sequences erase write status and verify transfers" {
+    const alloc = allocator();
+    const data = try alloc.dupe(u8, &.{ 0x12, 0x34, 0x56, 0x78 });
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .auto,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_info,
+        .data = data,
+        .erase = true,
+        .verify = true,
+        .skip_id_check = true,
+    };
+    defer {
+        alloc.free(op.data);
+        if (op.verify_data.len != 0) alloc.free(op.verify_data);
+    }
+
+    var info = [_]u8{0} ** 80;
+    info[4] = 1;
+    info[5] = 2;
+    info[6] = 7;
+    @memcpy(info[8..24], "2026-07-04......");
+    @memcpy(info[24..32], "T48CODE!");
+    @memcpy(info[32..54], "SERIAL-T48-00000000000");
+    var status = [_]u8{0} ** 32;
+
+    try completeTransfer(&op, &info);
+    try expectNextTransfer(&op, .out, 1, 64); // begin
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 1, 8); // begin status command
+    try completeTransfer(&op, &.{});
+    try completeTransfer(&op, &status);
+    try expectNextTransfer(&op, .out, 1, 15); // erase
+    try completeTransfer(&op, &.{});
+    try completeTransfer(&op, &status);
+    try expectNextTransfer(&op, .out, 1, 8); // end after erase
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 1, 64); // second begin
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 1, 8); // second status command
+    try completeTransfer(&op, &.{});
+    try completeTransfer(&op, &status);
+    try expectNextTransfer(&op, .out, 1, 8); // write command
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 2, 4); // T48 payload endpoint
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 1, 8); // write status command
+    try completeTransfer(&op, &.{});
+    try completeTransfer(&op, &status);
+    try expectNextTransfer(&op, .out, 1, 8); // verify read command
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .in, 2, 4); // T48 read payload endpoint
+    try completeTransfer(&op, data);
+    try std.testing.expectEqual(State.done, op.state);
+}
+
+test "T48 Wasm erase response status is validated" {
+    var data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_erase,
+        .data = &data,
+    };
+    var status = [_]u8{0} ** 32;
+    status[0] = 1;
+    try std.testing.expectError(error.ProgrammerStatusError, completeTransfer(&op, &status));
+}
+
 test "T56 Wasm reads are capped to native protocol payload window" {
     var bytes = [_]u8{0} ** 512;
     var op = Operation{
@@ -652,4 +738,11 @@ test "T56 Wasm write payload uses owned payload buffer" {
     try std.testing.expectEqual(@as(u32, 1024), transfer.len);
     try std.testing.expectEqualSlices(u8, &data, payload[0..data.len]);
     try std.testing.expectEqual(@as(u8, 0), payload[data.len]);
+}
+
+fn expectNextTransfer(op: *Operation, kind: TransferKind, endpoint: u8, len: u32) !void {
+    const transfer = try nextTransfer(op);
+    try std.testing.expectEqual(kind, transfer.kind);
+    try std.testing.expectEqual(endpoint, transfer.endpoint);
+    try std.testing.expectEqual(len, transfer.len);
 }
