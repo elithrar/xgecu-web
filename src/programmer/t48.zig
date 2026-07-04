@@ -316,7 +316,7 @@ fn rowByteCount(size_bits: u8) usize {
     return (@as(usize, size_bits) + 7) / 8;
 }
 
-test "begin transaction sends upstream T48 packet fields" {
+test "begin transaction sends expected T48 packet fields" {
     var status_response = [_]u8{0} ** 32;
     var fake = transport.FakeTransport.init(std.testing.allocator, &status_response);
     defer fake.deinit();
@@ -455,7 +455,7 @@ test "erase rejects T48 status and overcurrent responses" {
     try std.testing.expectError(Error.Overcurrent, erase(fake.transport(), 0, 0));
 }
 
-test "protect commands send upstream T48 opcodes" {
+test "protect commands send expected T48 opcodes" {
     var response = [_]u8{0} ** 1;
     var fake = transport.FakeTransport.init(std.testing.allocator, &response);
     defer fake.deinit();
@@ -539,7 +539,7 @@ test "write fuses sends T48 fuse packet with firmware offset" {
     try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x34 }, fake.sent.items[8..10]);
 }
 
-test "read and write JEDEC rows use upstream T48 packet layout" {
+test "read and write JEDEC rows use expected T48 packet layout" {
     var response = [_]u8{0} ** 32;
     response[0] = 0xa0;
     response[1] = 0x50;

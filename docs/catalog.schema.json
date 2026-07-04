@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/elithrar/minipro-zig/catalog.schema.json",
+  "$id": "https://xgecu-webusb.local/catalog.schema.json",
   "title": "XGecu WebUSB catalog source",
   "type": "object",
   "required": ["devices"],

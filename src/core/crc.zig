@@ -17,7 +17,7 @@ pub fn crc32(data: []const u8, initial: u32) u32 {
     return crc;
 }
 
-test "crc32 matches upstream implementation" {
+test "crc32 matches reference values" {
     try std.testing.expectEqual(@as(u32, 0xffffffff), crc32("", 0xffffffff));
     try std.testing.expectEqual(@as(u32, 0x340bc6d9), crc32("123456789", 0xffffffff));
     try std.testing.expectEqual(@as(u32, 0xcbf43926), ~crc32("123456789", 0xffffffff));

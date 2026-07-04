@@ -373,7 +373,7 @@ test "read and write T56 fuses and chip ID" {
     try std.testing.expectEqual(@as(u32, 0x1234), id.value);
 }
 
-test "erase and protect commands send upstream T56 opcodes" {
+test "erase and protect commands send expected T56 opcodes" {
     var response = [_]u8{0} ** 64;
     var fake = transport.FakeTransport.init(std.testing.allocator, &response);
     defer fake.deinit();

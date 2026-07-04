@@ -5,8 +5,6 @@ pub const core = struct {
     pub const algorithm_payload = @import("core/algorithm_payload.zig");
     pub const crc = @import("core/crc.zig");
     pub const endian = @import("core/endian.zig");
-    pub const fuses = @import("core/fuses.zig");
-    pub const gal = @import("core/gal.zig");
     pub const logic = @import("core/logic.zig");
     pub const model = @import("core/model.zig");
 };

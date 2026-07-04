@@ -180,15 +180,15 @@ fn getPinCount(raw: u32) u8 {
     };
 }
 
-test "programmer parser accepts legacy names" {
+test "programmer parser accepts supported names only" {
     try std.testing.expectEqual(Programmer.t48, Programmer.parse("T48").?);
     try std.testing.expectEqual(Programmer.t56, Programmer.parse("t56").?);
-    try std.testing.expect(Programmer.parse("tl866ii") == null);
-    try std.testing.expect(Programmer.parse("t76") == null);
-    try std.testing.expect(Programmer.parse("t866") == null);
+    try std.testing.expect(Programmer.parse("t47") == null);
+    try std.testing.expect(Programmer.parse("t57") == null);
+    try std.testing.expect(Programmer.parse("programmer") == null);
 }
 
-test "decode flags matches upstream masks" {
+test "decode flags matches catalog masks" {
     const decoded = decodeFlags(0x003cf032, 0x00003123, mp_voltages1, custom_protocol_mask | 1);
     try std.testing.expect(decoded.can_erase);
     try std.testing.expect(decoded.has_chip_id);
