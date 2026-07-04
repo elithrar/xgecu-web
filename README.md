@@ -2,7 +2,7 @@
 
 Browser WebUSB APIs for programming ROM devices with XGecu T48/T56 programmers.
 
-This package is intentionally scoped to T48 and T56 hardware. Legacy TL866, TL866II+, T76, CLI, libusb, and SQLite runtime support have been removed from the build.
+This package is intentionally scoped to T48 and T56 hardware, with a Zig core, a browser-oriented Wasm ABI, and a TypeScript WebUSB API.
 
 ## Install/build from source
 
@@ -55,13 +55,17 @@ console.log(devices);
 
 const programmer = await api.requestProgrammer();
 
-const bytes = await api.readROM({
-  programmer,
-  device: "AT28C64B@DIP28",
-  memory: "code"
-});
+try {
+  const bytes = await api.readROM({
+    programmer,
+    device: "AT28C64B@DIP28",
+    memory: "code"
+  });
 
-console.log(`Read ${bytes.byteLength} bytes`);
+  console.log(`Read ${bytes.byteLength} bytes`);
+} finally {
+  await programmer.close();
+}
 ```
 
 See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, read a ROM, download the readback, and write a selected binary image with erase + verify.
@@ -97,7 +101,7 @@ defer allocator.free(bytes);
 
 ## Chip catalog
 
-The runtime SQLite database has been removed. Browser builds use a static catalog generated from `data/catalog.json` into `src/catalog/generated.zig`.
+Browser builds use a static catalog generated from `data/catalog.json` into `src/catalog/generated.zig`.
 
 Each `DeviceRecord` contains the protocol fields needed by the T48/T56 packet layer. T56 entries must also include a non-empty `t56AlgorithmHex` or `t56AlgorithmBase64` payload in the JSON source; entries without that payload do not advertise T56 support and will be rejected if a T56 programmer is auto-detected.
 
