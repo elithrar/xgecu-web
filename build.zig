@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    _ = b.addModule("xgecu-webusb", .{
+    _ = b.addModule("xgecu-zig", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -35,7 +35,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const wasm = b.addExecutable(.{
-        .name = "xgecu_webusb",
+        .name = "xgecu_web",
         .root_module = wasm_module,
     });
     wasm.entry = .disabled;
@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "Build the browser WebUSB Wasm module");
     wasm_step.dependOn(&b.addInstallArtifact(wasm, .{
         .dest_dir = .{ .override = .bin },
-        .dest_sub_path = "xgecu_webusb.wasm",
+        .dest_sub_path = "xgecu_web.wasm",
     }).step);
 
     const check_step = b.step("check", "Compile Zig library tests and Wasm module");

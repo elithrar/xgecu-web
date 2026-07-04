@@ -44,7 +44,7 @@ export class WasmBridge {
   constructor(private readonly exports: WasmExports) {}
 
   static async load(wasmUrl?: string | URL): Promise<WasmBridge> {
-    const url = wasmUrl ?? new URL(/* @vite-ignore */ "./xgecu_webusb.wasm", import.meta.url);
+    const url = wasmUrl ?? new URL(/* @vite-ignore */ "./xgecu_web.wasm", import.meta.url);
     const response = await fetch(url);
     const module = await WebAssembly.instantiate(await response.arrayBuffer(), {});
     return new WasmBridge(module.instance.exports as unknown as WasmExports);

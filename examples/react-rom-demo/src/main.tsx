@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createProgrammer } from "@xgecu/webusb";
-import type { DeviceSummary, ProgrammerConnection, XgecuWebUSB } from "@xgecu/webusb";
+import { createProgrammer } from "xgecu-web";
+import type { DeviceSummary, ProgrammerConnection, XgecuWebUSB } from "xgecu-web";
 import "./styles.css";
 
 function App() {

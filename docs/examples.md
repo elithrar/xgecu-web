@@ -7,7 +7,7 @@ These examples are written as browser application code. WebUSB requires a secure
 This example uses the catalogued `AT28C64B@DIP28` target as a concrete 28-pin EEPROM workflow. Use it as a template for an automotive ECU EEPROM workflow only after confirming the exact chip marking and package on the device. A 28-pin package does not guarantee that the part is an AT28C64B or that the programming voltages/pinout are compatible.
 
 ```ts
-import { createProgrammer } from "@xgecu/webusb";
+import { createProgrammer } from "xgecu-web";
 
 const targetDevice = "AT28C64B@DIP28";
 

@@ -1,5 +1,5 @@
 {
-  "name": "@xgecu/webusb",
+  "name": "xgecu-web",
   "version": "0.1.0",
   "description": "Browser WebUSB API for programming ROMs with XGecu T48/T56 programmers.",
   "type": "module",
@@ -10,8 +10,8 @@
     "check:catalog": "node tools/generate-catalog.mjs --check",
     "build": "pnpm run build:wasm && pnpm run build:js",
     "build:zig": "pnpm run generate:catalog && zig build check",
-    "build:wasm": "pnpm run generate:catalog && zig build wasm -Doptimize=ReleaseSmall && mkdir -p js/dist && cp zig-out/bin/xgecu_webusb.wasm js/dist/xgecu_webusb.wasm",
-    "build:js": "vite build && cp js/dist/xgecu_webusb.wasm dist/xgecu_webusb.wasm",
+    "build:wasm": "pnpm run generate:catalog && zig build wasm -Doptimize=ReleaseSmall && mkdir -p js/dist && cp zig-out/bin/xgecu_web.wasm js/dist/xgecu_web.wasm",
+    "build:js": "vite build && cp js/dist/xgecu_web.wasm dist/xgecu_web.wasm",
     "test": "pnpm run test:zig && pnpm run test:js",
     "test:js": "vitest run",
     "test:zig": "pnpm run generate:catalog && zig build test",
