@@ -28,14 +28,23 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Zig build check
+        run: pnpm run build:zig
+
       - name: Zig tests
-        run: zig build test
+        run: pnpm run test:zig
 
       - name: JS typecheck
         run: pnpm typecheck
 
       - name: JS tests
-        run: pnpm test
+        run: pnpm run test:js
 
       - name: Package build
         run: pnpm build
+
+      - name: Demo typecheck
+        run: pnpm run demo:typecheck
+
+      - name: Demo build
+        run: pnpm run demo:build

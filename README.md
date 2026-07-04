@@ -12,6 +12,23 @@ pnpm build
 pnpm test
 ```
 
+Useful pnpm scripts:
+
+```sh
+pnpm build            # build Wasm + browser JS package
+pnpm build:zig        # compile Zig library tests and Wasm module
+pnpm build:wasm       # build xgecu_webusb.wasm
+pnpm build:js         # build the TypeScript browser package
+pnpm test             # run Zig + JS tests
+pnpm test:zig         # run Zig unit tests
+pnpm test:js          # run Vitest tests
+pnpm typecheck        # typecheck the TypeScript library
+pnpm demo:dev         # run the React ROM demo app
+pnpm demo:build       # build the React ROM demo app
+pnpm demo:typecheck   # typecheck the React ROM demo app
+pnpm ci               # run the local CI command set
+```
+
 The Zig library and Wasm ABI are built with:
 
 ```sh

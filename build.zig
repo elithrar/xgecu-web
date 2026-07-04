@@ -46,4 +46,8 @@ pub fn build(b: *std.Build) void {
         .dest_dir = .{ .override = .bin },
         .dest_sub_path = "xgecu_webusb.wasm",
     }).step);
+
+    const check_step = b.step("check", "Compile Zig library tests and Wasm module");
+    check_step.dependOn(&unit_tests.step);
+    check_step.dependOn(&wasm.step);
 }
