@@ -17,6 +17,7 @@ const XGECU_VENDOR_ID = 0xa466;
 const XGECU_PRODUCT_ID = 0x0a53;
 const INTERFACE_NUMBER = 0;
 const DEFAULT_CONFIGURATION = 1;
+const claimedDevices = new WeakSet<USBDeviceLike>();
 
 export class WebUSBProgrammerConnection implements ProgrammerConnection {
   constructor(readonly device: USBDeviceLike) {}
@@ -47,8 +48,14 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
 
   async close(): Promise<void> {
     if (!this.device.opened) return;
-    await this.device.releaseInterface?.(INTERFACE_NUMBER);
-    await this.device.close();
+    try {
+      if (claimedDevices.has(this.device)) await this.device.releaseInterface?.(INTERFACE_NUMBER);
+    } catch {
+      // Closing is the cleanup path; a stale claimed-interface state should not keep the device open.
+    } finally {
+      claimedDevices.delete(this.device);
+      await this.device.close();
+    }
   }
 }
 
@@ -79,7 +86,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   }
 
   async readROM(options: ReadROMOptions): Promise<Uint8Array> {
-    await ensureOpen(options.programmer.device);
+    await ensureReady(options.programmer.device);
     const handle = this.wasm.startReadROM({
       programmer: options.programmerKind ?? "auto",
       device: options.device,
@@ -90,7 +97,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   }
 
   async writeROM(options: WriteROMOptions): Promise<void> {
-    await ensureOpen(options.programmer.device);
+    await ensureReady(options.programmer.device);
     const handle = this.wasm.startWriteROM({
       programmer: options.programmerKind ?? "auto",
       device: options.device,
@@ -131,14 +138,17 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-async function ensureOpen(device: USBDeviceLike): Promise<void> {
-  if (!device.opened) await openAndClaim(device);
+async function ensureReady(device: USBDeviceLike): Promise<void> {
+  await openAndClaim(device);
 }
 
 async function openAndClaim(device: USBDeviceLike): Promise<void> {
   if (!device.opened) await device.open();
   if (device.configuration == null) await device.selectConfiguration(DEFAULT_CONFIGURATION);
-  await device.claimInterface(INTERFACE_NUMBER);
+  if (!claimedDevices.has(device)) {
+    await device.claimInterface(INTERFACE_NUMBER);
+    claimedDevices.add(device);
+  }
 }
 
 function requireWebUSB(): USBNavigatorLike {

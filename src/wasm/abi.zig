@@ -15,6 +15,8 @@ const TransferKind = enum(u32) {
     failed = 3,
 };
 
+const t56_read_payload_max = 64;
+
 const OpKind = enum {
     read,
     write,
@@ -71,6 +73,7 @@ const Operation = struct {
     verify: bool = false,
     data: []u8 = &.{},
     verify_data: []u8 = &.{},
+    payload: []u8 = &.{},
     offset: usize = 0,
     command: [512]u8 = [_]u8{0} ** 512,
     transfer: Transfer = .{},
@@ -79,6 +82,7 @@ const Operation = struct {
     fn deinit(self: *Operation, alloc: std.mem.Allocator) void {
         if (self.data.len != 0) alloc.free(self.data);
         if (self.verify_data.len != 0) alloc.free(self.verify_data);
+        if (self.payload.len != 0) alloc.free(self.payload);
         alloc.destroy(self);
     }
 };
@@ -131,9 +135,11 @@ export fn mp_device_list(query_ptr: u32, query_len: u32, programmer_value: u32, 
     out.writer.writeAll("[") catch return setError("out of memory");
     for (summaries, 0..) |summary, index| {
         if (index != 0) out.writer.writeAll(",") catch return setError("out of memory");
+        out.writer.writeAll("{\"name\":") catch return setError("out of memory");
+        writeJsonString(&out.writer, summary.name) catch return setError("out of memory");
         out.writer.print(
-            "{{\"name\":\"{s}\",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"packagePins\":{d},\"supportsT48\":{},\"supportsT56\":{}}}",
-            .{ summary.name, summary.code_memory_size, summary.data_memory_size, summary.package_pins, summary.supports_t48, summary.supports_t56 },
+            ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"packagePins\":{d},\"supportsT48\":{},\"supportsT56\":{}}}",
+            .{ summary.code_memory_size, summary.data_memory_size, summary.package_pins, summary.supports_t48, summary.supports_t56 },
         ) catch return setError("out of memory");
     }
     out.writer.writeAll("]") catch return setError("out of memory");
@@ -295,9 +301,10 @@ fn nextTransfer(op: *Operation) !Transfer {
             const len = currentWriteLen(op);
             if (op.programmer == .t56) {
                 const transfer_len = @max(@as(usize, op.descriptor.write_buffer_size), len);
-                @memset(op.command[0..transfer_len], 0);
-                @memcpy(op.command[0..len], op.data[op.offset .. op.offset + len]);
-                return outTransfer(op, 1, op.command[0..transfer_len]);
+                if (transfer_len > op.payload.len) return error.PayloadBufferTooSmall;
+                @memset(op.payload[0..transfer_len], 0);
+                @memcpy(op.payload[0..len], op.data[op.offset .. op.offset + len]);
+                return outTransfer(op, 1, op.payload[0..transfer_len]);
             }
             return outTransfer(op, 2, op.data[op.offset .. op.offset + len]);
         },
@@ -336,6 +343,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             } else {
                 if (op.data.len > memorySize(op.device, op.memory)) return error.InputTooLarge;
                 if (op.verify) op.verify_data = try allocator().alloc(u8, op.data.len);
+                if (info.programmer == .t56) op.payload = try allocator().alloc(u8, @max(@as(usize, op.descriptor.write_buffer_size), 1));
             }
             op.state = if (op.programmer == .t56) .send_t56_bitstream_header else .send_begin;
         },
@@ -408,7 +416,8 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
 
 fn outTransfer(op: *Operation, endpoint: u8, bytes: []const u8) Transfer {
     _ = op;
-    return .{ .kind = .out, .endpoint = endpoint, .ptr = @intCast(@intFromPtr(bytes.ptr)), .len = @intCast(bytes.len) };
+    const ptr: u32 = if (builtin.target.cpu.arch == .wasm32) @intCast(@intFromPtr(bytes.ptr)) else 0;
+    return .{ .kind = .out, .endpoint = endpoint, .ptr = ptr, .len = @intCast(bytes.len) };
 }
 
 fn inTransfer(endpoint: u8, len: u32) Transfer {
@@ -465,7 +474,8 @@ fn writeCommand(memory: model.MemoryKind) u8 {
 
 fn currentReadLen(op: *Operation) usize {
     const total = if (op.state == .verify_send_read_cmd or op.state == .verify_recv_read_payload) op.verify_data.len else op.data.len;
-    const chunk = @max(@as(usize, op.descriptor.read_buffer_size), 1);
+    const descriptor_chunk = @max(@as(usize, op.descriptor.read_buffer_size), 1);
+    const chunk = if (op.programmer == .t56) @min(descriptor_chunk, t56_read_payload_max) else descriptor_chunk;
     return @min(chunk, total - op.offset);
 }
 
@@ -536,6 +546,24 @@ fn sliceConst(ptr: u32, len: u32) []const u8 {
     return bytes[0..len];
 }
 
+fn writeJsonString(writer: anytype, text: []const u8) !void {
+    try writer.writeByte('"');
+    for (text) |byte| {
+        switch (byte) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            0x08 => try writer.writeAll("\\b"),
+            0x0c => try writer.writeAll("\\f"),
+            0x00...0x07, 0x0b, 0x0e...0x1f => try writer.print("\\u00{x:0>2}", .{byte}),
+            else => try writer.writeByte(byte),
+        }
+    }
+    try writer.writeByte('"');
+}
+
 fn setResult(bytes: []u8) u32 {
     if (last_result.len != 0) allocator().free(last_result);
     last_result = bytes;
@@ -558,6 +586,7 @@ fn errorCode(err: anyerror) u32 {
         error.ProgrammerStatusError => 15,
         error.VerifyFailed => 16,
         error.AlgorithmUnavailable => 17,
+        error.PayloadBufferTooSmall => 18,
         else => 1,
     };
 }
@@ -575,4 +604,52 @@ test "device list ABI returns JSON" {
     const len = mp_result_len();
     const bytes = sliceConst(ptr, len);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "AT28C64B") != null);
+}
+
+test "JSON string writer escapes generated catalog names" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeJsonString(&out.writer, "A\"B\\C\n");
+    const bytes = try out.toOwnedSlice();
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqualStrings("\"A\\\"B\\\\C\\n\"", bytes);
+}
+
+test "T56 Wasm reads are capped to native protocol payload window" {
+    var bytes = [_]u8{0} ** 512;
+    var op = Operation{
+        .kind = .read,
+        .requested_programmer = .t56,
+        .programmer = .t56,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t56),
+        .memory = .code,
+        .state = .send_read_cmd,
+        .data = &bytes,
+    };
+    op.descriptor.read_buffer_size = 512;
+    try std.testing.expectEqual(@as(usize, t56_read_payload_max), currentReadLen(&op));
+}
+
+test "T56 Wasm write payload uses owned payload buffer" {
+    var data = [_]u8{0xaa} ** 20;
+    var payload = [_]u8{0} ** 1024;
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t56,
+        .programmer = .t56,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t56),
+        .memory = .code,
+        .state = .send_write_payload,
+        .data = &data,
+        .payload = &payload,
+    };
+    op.descriptor.write_buffer_size = 1024;
+    const transfer = try nextTransfer(&op);
+    try std.testing.expectEqual(TransferKind.out, transfer.kind);
+    try std.testing.expectEqual(@as(u8, 1), transfer.endpoint);
+    try std.testing.expectEqual(@as(u32, 1024), transfer.len);
+    try std.testing.expectEqualSlices(u8, &data, payload[0..data.len]);
+    try std.testing.expectEqual(@as(u8, 0), payload[data.len]);
 }
