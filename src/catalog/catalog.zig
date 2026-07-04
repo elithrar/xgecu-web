@@ -37,9 +37,16 @@ pub fn list(allocator: std.mem.Allocator, query: ?[]const u8, programmer: model.
         const package = model.decodePackageDetails(device.package_details_raw);
         try out.append(allocator, .{
             .name = device.canonical_name,
+            .aliases = device.aliases,
+            .chip_type = device.chip_type,
             .code_memory_size = device.code_memory_size,
             .data_memory_size = device.data_memory_size,
+            .user_memory_size = device.data_memory2_size,
             .package_pins = package.pin_count,
+            .page_size = device.page_size,
+            .chip_id = device.chip_id,
+            .chip_id_bytes_count = device.chip_id_bytes_count,
+            .blank_value = device.blank_value,
             .supports_t48 = device.supports(.t48),
             .supports_t56 = device.supports(.t56),
         });

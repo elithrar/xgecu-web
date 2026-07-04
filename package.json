@@ -27,7 +27,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./xgecu_web.wasm": "./dist/xgecu_web.wasm"
   },
   "files": [
     "dist",
@@ -35,7 +36,9 @@
     "README.md",
     "LICENSE"
   ],
-  "dependencies": {},
+  "dependencies": {
+    "better-result": "^2.9.2"
+  },
   "devDependencies": {
     "@types/node": "latest",
     "typescript": "latest",

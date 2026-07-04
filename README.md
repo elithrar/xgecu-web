@@ -48,21 +48,27 @@ WebUSB requires a Chromium-based browser and a secure context: HTTPS or `localho
 ```ts
 import { createProgrammer } from "xgecu-web";
 
-const api = await createProgrammer();
+const apiResult = await createProgrammer();
+if (apiResult.status === "error") throw apiResult.error;
+const api = apiResult.value;
 
 const devices = api.deviceList({ search: "AT28", programmer: "t48" });
-console.log(devices);
+if (devices.status === "error") throw devices.error;
+console.log(devices.value);
 
-const programmer = await api.requestProgrammer();
+const requested = await api.requestProgrammer();
+if (requested.status === "error") throw requested.error;
+const programmer = requested.value;
 
 try {
-  const bytes = await api.readROM({
+  const read = await api.readROM({
     programmer,
     device: "AT28C64B@DIP28",
     memory: "code"
   });
+  if (read.status === "error") throw read.error;
 
-  console.log(`Read ${bytes.byteLength} bytes`);
+  console.log(`Read ${read.value.byteLength} bytes`);
 } finally {
   await programmer.close();
 }

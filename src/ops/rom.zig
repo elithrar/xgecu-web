@@ -144,6 +144,7 @@ fn openSupportedSession(trans: transport_mod.Transport, requested: model.Program
         .t48, .t56 => {},
         else => return Error.UnsupportedProgrammer,
     }
+    if (info.status == .bootloader) return Error.ProgrammerInBootloader;
     if (requested != .auto and requested != info.programmer) return Error.ProgrammerMismatch;
     return info;
 }

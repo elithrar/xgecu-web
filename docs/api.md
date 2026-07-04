@@ -6,6 +6,8 @@ The package exposes a high-level browser API plus lower-level WebUSB/Wasm helper
 import { createProgrammer } from "xgecu-web";
 ```
 
+High-level API methods return `better-result` `Result` values for expected WebUSB, catalog, and programmer errors. Check `result.status` before using `result.value`; the error side is an `XgecuWebUSBError` with a stable `code`.
+
 ## Core types
 
 ```ts
@@ -14,9 +16,16 @@ type MemoryKind = "code" | "data" | "user";
 
 interface DeviceSummary {
   name: string;
+  aliases: string[];
+  chipType: "memory" | "mcu" | "pld" | "sram" | "logic" | "nand" | "emmc" | "vga";
   codeMemorySize: number;
   dataMemorySize: number;
+  userMemorySize: number;
   packagePins: number;
+  pageSize: number;
+  chipId: number;
+  chipIdBytesCount: number;
+  blankValue: number;
   supportsT48: boolean;
   supportsT56: boolean;
 }
@@ -29,16 +38,24 @@ interface DeviceSummary {
 Loads the Wasm module and returns the high-level browser API.
 
 ```ts
-const api = await createProgrammer({
+const apiResult = await createProgrammer({
   wasmUrl: new URL("./xgecu_web.wasm", import.meta.url)
 });
+if (apiResult.status === "error") throw apiResult.error;
+const api = apiResult.value;
 ```
 
 Omit `wasmUrl` when the bundler can resolve the package's default Wasm asset.
+For bundlers that prefer package subpaths, use:
+
+```ts
+const wasmUrl = new URL("xgecu-web/xgecu_web.wasm", import.meta.url);
+```
+
 Use `usb` to inject a WebUSB-compatible object in tests:
 
 ```ts
-const api = await createProgrammer({ usb: fakeUsb });
+const api = (await createProgrammer({ usb: fakeUsb })).unwrap();
 ```
 
 ## `deviceList(query?)`
@@ -47,6 +64,7 @@ Returns target ROM/device metadata from the generated embedded T48/T56 catalog. 
 
 ```ts
 const devices = api.deviceList({ search: "AT28", programmer: "t48", limit: 20 });
+if (devices.status === "error") throw devices.error;
 ```
 
 T56 results are listed only for catalog records that include a generated T56 algorithm payload.
@@ -63,9 +81,22 @@ Returns already-authorized WebUSB devices matching the XGecu USB ID. This does n
 
 ```ts
 const programmers = await api.getProgrammers();
-for (const programmer of programmers) {
+if (programmers.status === "error") throw programmers.error;
+for (const programmer of programmers.value) {
   console.log(programmer.productName, programmer.opened);
 }
+```
+
+Use `connectProgrammer(device)` with a `USBDevice` returned by `navigator.usb.getDevices()` when you want to reconnect without showing the chooser.
+
+## `resolveDevice(name, programmer?)`
+
+Resolves a canonical name or alias through the embedded catalog and returns full device metadata.
+
+```ts
+const target = api.resolveDevice("AT28C64B", "t48");
+if (target.status === "error") throw target.error;
+if (!target.value) throw new Error("Target is not in the catalog.");
 ```
 
 ## `requestProgrammer()`
@@ -75,7 +106,9 @@ Shows the WebUSB chooser for supported XGecu USB IDs, opens the selected device,
 Close the returned connection when your app is done with the programmer:
 
 ```ts
-const programmer = await api.requestProgrammer();
+const requested = await api.requestProgrammer();
+if (requested.status === "error") throw requested.error;
+const programmer = requested.value;
 try {
   // readROM or writeROM calls
 } finally {
@@ -93,19 +126,22 @@ const data = await api.readROM({
   device: "AT28C64B@DIP28",
   memory: "code",
   programmerKind: "t48",
-  skipIdCheck: false
+  skipIdCheck: false,
+  onProgress: (event) => console.log(event.phase, event.offset, event.total)
 });
+if (data.status === "error") throw data.error;
 ```
 
 The returned `Uint8Array` length is the catalogued memory size for the selected memory region.
 Leave `skipIdCheck` at its default `false` unless you have an independent target-identification step.
+Pass an `AbortSignal` as `signal` to cancel before the next USB transfer.
 
 ## `writeROM(options)`
 
 Writes a memory image to the selected target. `data` must be a non-empty `Uint8Array`.
 
 ```ts
-await api.writeROM({
+const write = await api.writeROM({
   programmer,
   device: "AT28C64B@DIP28",
   data,
@@ -115,10 +151,12 @@ await api.writeROM({
   verify: true,
   skipIdCheck: false
 });
+if (write.status === "error") throw write.error;
 ```
 
 `erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
+Protected flash workflows can opt into `unprotectBefore` and `protectAfter` when the chip and catalog flags require it.
 
 For a complete backup-then-write browser flow, including image length checks, see `docs/examples.md`.
 

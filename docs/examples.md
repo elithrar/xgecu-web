@@ -11,12 +11,15 @@ import { createProgrammer } from "xgecu-web";
 
 const targetDevice = "AT28C64B@DIP28";
 
-const api = await createProgrammer();
+const apiResult = await createProgrammer();
+if (apiResult.status === "error") throw apiResult.error;
+const api = apiResult.value;
 
 // Catalog queries are synchronous because the catalog is embedded in Wasm.
 // This should include AT28C64B@DIP28 with the current seed catalog.
 const matches = api.deviceList({ search: "AT28", programmer: "t48", limit: 10 });
-const target = matches.find((device) => device.name === targetDevice);
+if (matches.status === "error") throw matches.error;
+const target = matches.value.find((device) => device.name === targetDevice);
 if (!target) {
   throw new Error(`${targetDevice} is not in the generated catalog.`);
 }
@@ -26,15 +29,19 @@ if (target.packagePins !== 28) {
 
 // Shows the browser's WebUSB chooser, opens the selected programmer, and
 // claims interface 0.
-const programmer = await api.requestProgrammer();
+const requested = await api.requestProgrammer();
+if (requested.status === "error") throw requested.error;
+const programmer = requested.value;
 
 try {
   // Always read and save a backup before writing an automotive EEPROM.
-  const original = await api.readROM({
+  const originalResult = await api.readROM({
     programmer,
     device: targetDevice,
     memory: "code"
   });
+  if (originalResult.status === "error") throw originalResult.error;
+  const original = originalResult.value;
 
   downloadBytes(original, "911-eeprom-original.bin");
 
@@ -48,7 +55,7 @@ try {
     throw new Error(`Image size mismatch: expected ${original.byteLength} bytes, got ${patched.byteLength}.`);
   }
 
-  await api.writeROM({
+  const written = await api.writeROM({
     programmer,
     device: targetDevice,
     memory: "code",
@@ -56,6 +63,7 @@ try {
     erase: true,
     verify: true
   });
+  if (written.status === "error") throw written.error;
 
   console.log("EEPROM write and verify completed.");
 } finally {

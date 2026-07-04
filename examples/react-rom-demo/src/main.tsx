@@ -18,41 +18,81 @@ function App() {
   useEffect(() => {
     createProgrammer()
       .then((created) => {
-        setApi(created);
+        if (created.status === "error") {
+          setStatus(created.error.message);
+          return;
+        }
+        setApi(created.value);
         setStatus("Ready. Connect a T48/T56 programmer to begin.");
       })
       .catch((error: unknown) => setStatus(error instanceof Error ? error.message : String(error)));
   }, []);
 
-  const devices: DeviceSummary[] = useMemo(() => api?.deviceList({ search: query, limit: 25 }) ?? [], [api, query]);
+  useEffect(() => {
+    return () => {
+      void programmer?.close();
+    };
+  }, [programmer]);
+
+  const devices: DeviceSummary[] = useMemo(() => {
+    const result = api?.deviceList({ search: query, limit: 25 });
+    if (!result) return [];
+    if (result.status === "error") {
+      setStatus(result.error.message);
+      return [];
+    }
+    return result.value;
+  }, [api, query]);
 
   async function connect() {
     if (!api) return;
     setStatus("Requesting WebUSB device...");
-    const connection = await api.requestProgrammer();
-    setProgrammer(connection);
-    setStatus(`Connected to ${connection.productName ?? "programmer"}.`);
+    const result = await api.requestProgrammer();
+    if (result.status === "error") {
+      setStatus(result.error.message);
+      return;
+    }
+    setProgrammer(result.value);
+    setStatus(`Connected to ${result.value.productName ?? "programmer"}.`);
   }
 
   async function readRom() {
     if (!api || !programmer) return;
     setStatus(`Reading ${selectedDevice}...`);
-    const data = await api.readROM({ programmer, device: selectedDevice, skipIdCheck });
-    setRom(data);
-    setStatus(`Read ${data.byteLength} bytes from ${selectedDevice}.`);
+    const result = await api.readROM({
+      programmer,
+      device: selectedDevice,
+      skipIdCheck,
+      onProgress: (event) => setStatus(`${event.phase}: ${event.offset}/${event.total} bytes`)
+    });
+    if (result.status === "error") {
+      setStatus(result.error.message);
+      return;
+    }
+    setRom(result.value);
+    setStatus(`Read ${result.value.byteLength} bytes from ${selectedDevice}.`);
   }
 
   async function writeRom() {
-    if (!api || !programmer || !writeImage || !confirmWrite) return;
+    if (!api || !programmer || !writeImage || !rom || !confirmWrite) return;
+    if (writeImage.byteLength !== rom.byteLength) {
+      setStatus(`Image size mismatch: expected ${rom.byteLength} bytes, got ${writeImage.byteLength}.`);
+      return;
+    }
     setStatus(`Writing ${writeImage.byteLength} bytes to ${selectedDevice}...`);
-    await api.writeROM({
+    const result = await api.writeROM({
       programmer,
       device: selectedDevice,
       data: writeImage,
       erase: true,
       verify: true,
-      skipIdCheck
+      skipIdCheck,
+      onProgress: (event) => setStatus(`${event.phase}: ${event.offset}/${event.total} bytes`)
     });
+    if (result.status === "error") {
+      setStatus(result.error.message);
+      return;
+    }
     setStatus("Write and verify complete.");
   }
 
@@ -118,7 +158,7 @@ function App() {
           <input type="checkbox" checked={confirmWrite} onChange={(event) => setConfirmWrite(event.currentTarget.checked)} />
           I understand writing will erase/program the selected ROM
         </label>
-        <button disabled={!api || !programmer || !writeImage || !confirmWrite} onClick={() => void writeRom()}>
+        <button disabled={!api || !programmer || !writeImage || !rom || writeImage.byteLength !== rom.byteLength || !confirmWrite} onClick={() => void writeRom()}>
           Write ROM with erase + verify
         </button>
       </section>

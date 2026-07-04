@@ -94,7 +94,9 @@ describe("BrowserXgecuWebUSB", () => {
     };
     const api = new BrowserXgecuWebUSB(fakeWasm(), usb);
 
-    const programmer = await api.requestProgrammer();
+    const result = await api.requestProgrammer();
+    expect(result.status).toBe("ok");
+    const programmer = result.unwrap();
 
     expect(programmer.opened).toBe(true);
     expect(device.configuration).toEqual({ configurationValue: 1 });
@@ -103,10 +105,11 @@ describe("BrowserXgecuWebUSB", () => {
 
   it("releases the claimed interface before closing", async () => {
     const device = new FakeDevice();
-    const programmer = await new BrowserXgecuWebUSB(fakeWasm(), {
+    const result = await new BrowserXgecuWebUSB(fakeWasm(), {
       requestDevice: vi.fn(async () => device),
       getDevices: vi.fn(async () => [device])
     }).requestProgrammer();
+    const programmer = result.unwrap();
 
     await programmer.close();
 
@@ -117,10 +120,11 @@ describe("BrowserXgecuWebUSB", () => {
   it("still closes when interface release fails", async () => {
     const device = new FakeDevice();
     device.failRelease = true;
-    const programmer = await new BrowserXgecuWebUSB(fakeWasm(), {
+    const result = await new BrowserXgecuWebUSB(fakeWasm(), {
       requestDevice: vi.fn(async () => device),
       getDevices: vi.fn(async () => [device])
     }).requestProgrammer();
+    const programmer = result.unwrap();
 
     await expect(programmer.close()).resolves.toBeUndefined();
 
@@ -136,10 +140,11 @@ describe("BrowserXgecuWebUSB", () => {
       requestDevice: vi.fn(async () => device),
       getDevices: vi.fn(async () => [device])
     });
-    const programmer = await api.requestProgrammer();
-    const data = await api.readROM({ programmer, device: "AT28C64B", skipIdCheck: true });
+    const programmer = (await api.requestProgrammer()).unwrap();
+    const result = await api.readROM({ programmer, device: "AT28C64B", skipIdCheck: true });
 
-    expect(data).toEqual(new Uint8Array([0x42]));
+    expect(result.status).toBe("ok");
+    expect(result.unwrap()).toEqual(new Uint8Array([0x42]));
     expect(runOperation).toHaveBeenCalledOnce();
   });
 
@@ -149,8 +154,9 @@ describe("BrowserXgecuWebUSB", () => {
     const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
     const programmer = programmerConnection(device);
 
-    await api.readROM({ programmer, device: "AT28C64B" });
+    const result = await api.readROM({ programmer, device: "AT28C64B" });
 
+    expect(result.status).toBe("ok");
     expect(device.configuration).toEqual({ configurationValue: 1 });
     expect(device.claimInterface).toHaveBeenCalledWith(0);
   });
@@ -161,11 +167,12 @@ describe("BrowserXgecuWebUSB", () => {
     const startWriteROM = vi.spyOn(wasm, "startWriteROM");
     const runOperation = vi.spyOn(wasm, "runOperation");
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
-    const programmer = await api.requestProgrammer();
+    const programmer = (await api.requestProgrammer()).unwrap();
     const data = new Uint8Array([0x01, 0x02]);
 
-    await api.writeROM({ programmer, device: "AT28C64B@DIP28", data });
+    const result = await api.writeROM({ programmer, device: "AT28C64B@DIP28", data });
 
+    expect(result.status).toBe("ok");
     expect(startWriteROM).toHaveBeenCalledWith({
       programmer: "auto",
       device: "AT28C64B@DIP28",
@@ -173,7 +180,10 @@ describe("BrowserXgecuWebUSB", () => {
       data,
       erase: true,
       verify: true,
-      skipIdCheck: false
+      skipIdCheck: false,
+      continueOnIdMismatch: false,
+      unprotectBefore: false,
+      protectAfter: false
     });
     expect(runOperation).toHaveBeenCalledOnce();
   });
@@ -183,16 +193,41 @@ describe("BrowserXgecuWebUSB", () => {
     const wasm = fakeWasm();
     const startWriteROM = vi.spyOn(wasm, "startWriteROM");
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
-    const programmer = await api.requestProgrammer();
+    const programmer = (await api.requestProgrammer()).unwrap();
 
-    await expect(api.writeROM({ programmer, device: "AT28C64B@DIP28", data: new Uint8Array() })).rejects.toThrow("must not be empty");
+    const result = await api.writeROM({ programmer, device: "AT28C64B@DIP28", data: new Uint8Array() });
+    expect(result.status).toBe("error");
+    if (result.status === "error") expect(result.error.message).toContain("must not be empty");
     expect(startWriteROM).not.toHaveBeenCalled();
+  });
+
+  it("rejects concurrent ROM operations on one device", async () => {
+    const device = new FakeDevice();
+    let release!: () => void;
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "runOperation").mockImplementation(
+      () =>
+        new Promise<Uint8Array>((resolve) => {
+          release = () => resolve(new Uint8Array([0x42]));
+        })
+    );
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = (await api.requestProgrammer()).unwrap();
+
+    const first = api.readROM({ programmer, device: "AT28C64B" });
+    const second = await api.readROM({ programmer, device: "AT28C64B" });
+    release();
+    await first;
+
+    expect(second.status).toBe("error");
+    if (second.status === "error") expect(second.error.code).toBe("OperationInProgress");
   });
 });
 
 function fakeWasm(): WasmBridge {
   return {
-    deviceList: () => [{ name: "AT28C64B@DIP28", codeMemorySize: 8192, dataMemorySize: 0, packagePins: 28, supportsT48: true, supportsT56: false }],
+    deviceList: () => [fakeDeviceSummary()],
+    resolveDevice: () => fakeDeviceSummary(),
     startReadROM: () => 1,
     startWriteROM: () => 2,
     runOperation: async (_handle: number, performTransfer: UsbTransferHandler) => {
@@ -200,6 +235,24 @@ function fakeWasm(): WasmBridge {
       return new Uint8Array([0x42]);
     }
   } as unknown as WasmBridge;
+}
+
+function fakeDeviceSummary() {
+  return {
+    name: "AT28C64B@DIP28",
+    aliases: ["AT28C64B"],
+    chipType: "memory",
+    codeMemorySize: 8192,
+    dataMemorySize: 0,
+    userMemorySize: 0,
+    packagePins: 28,
+    pageSize: 64,
+    chipId: 0,
+    chipIdBytesCount: 0,
+    blankValue: 0xff,
+    supportsT48: true,
+    supportsT56: false
+  } as const;
 }
 
 function fakeUsb(device: FakeDevice): USBNavigatorLike {

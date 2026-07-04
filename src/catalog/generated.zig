@@ -11,7 +11,6 @@ const at28c64b_dip28_aliases = [_][]const u8{
 };
 const at28c64b_dip28_programmers = [_]model.Programmer{
     .t48,
-    .t56,
 };
 
 const m27c64a_dip28_aliases = [_][]const u8{
@@ -21,7 +20,6 @@ const m27c64a_dip28_aliases = [_][]const u8{
 };
 const m27c64a_dip28_programmers = [_]model.Programmer{
     .t48,
-    .t56,
 };
 
 const w25q32jv_soic8_aliases = [_][]const u8{
@@ -31,7 +29,6 @@ const w25q32jv_soic8_aliases = [_][]const u8{
 };
 const w25q32jv_soic8_programmers = [_]model.Programmer{
     .t48,
-    .t56,
 };
 
 pub const devices = [_]schema.DeviceRecord{
@@ -95,7 +92,7 @@ pub const devices = [_]schema.DeviceRecord{
         .read_buffer_size = 512,
         .write_buffer_size = 256,
         .flags_raw = 0x30,
-        .chip_id = 0xef4016,
+        .chip_id = 0xef4017,
         .chip_id_bytes_count = 3,
     },
 };

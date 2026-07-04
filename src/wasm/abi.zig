@@ -43,14 +43,18 @@ const State = enum {
     send_second_begin,
     send_second_status,
     recv_second_status,
+    send_protect_off,
     send_write_cmd,
     send_write_payload,
     send_write_status,
     recv_write_status,
+    send_protect_on,
     send_read_cmd,
     recv_read_payload,
     verify_send_read_cmd,
     verify_recv_read_payload,
+    send_final_end,
+    send_abort_end,
     done,
     failed,
 };
@@ -81,11 +85,19 @@ const Operation = struct {
     command: [packet.begin_len]u8 = [_]u8{0} ** packet.begin_len,
     transfer: Transfer = .{},
     error_code: u32 = 0,
+    result: []u8 = &.{},
+    error_message: []u8 = &.{},
+    continue_on_id_mismatch: bool = false,
+    unprotect_before: bool = false,
+    protect_after: bool = false,
+    transaction_open: bool = false,
 
     fn deinit(self: *Operation, alloc: std.mem.Allocator) void {
         if (self.data.len != 0) alloc.free(self.data);
         if (self.verify_data.len != 0) alloc.free(self.verify_data);
         if (self.payload.len != 0) alloc.free(self.payload);
+        if (self.result.len != 0) alloc.free(self.result);
+        if (self.error_message.len != 0) alloc.free(self.error_message);
         alloc.destroy(self);
     }
 };
@@ -139,18 +151,39 @@ export fn mp_device_list(query_ptr: u32, query_len: u32, programmer_value: u32, 
     out.writer.writeAll("[") catch return setError("out of memory");
     for (summaries, 0..) |summary, index| {
         if (index != 0) out.writer.writeAll(",") catch return setError("out of memory");
-        out.writer.writeAll("{\"name\":") catch return setError("out of memory");
-        writeJsonString(&out.writer, summary.name) catch return setError("out of memory");
-        out.writer.print(
-            ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"packagePins\":{d},\"supportsT48\":{},\"supportsT56\":{}}}",
-            .{ summary.code_memory_size, summary.data_memory_size, summary.package_pins, summary.supports_t48, summary.supports_t56 },
-        ) catch return setError("out of memory");
+        writeDeviceSummaryJson(&out.writer, summary) catch return setError("out of memory");
     }
     out.writer.writeAll("]") catch return setError("out of memory");
     return setResult(out.toOwnedSlice() catch return setError("out of memory"));
 }
 
-export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, skip_id_check: u32) u32 {
+export fn mp_device_detail(name_ptr: u32, name_len: u32, programmer_value: u32) u32 {
+    const name = sliceConst(name_ptr, name_len);
+    const programmer = programmerFromAbi(programmer_value) catch return setError("invalid programmer");
+    const device = catalog.find(name, programmer) catch return setResult(allocator().dupe(u8, "null") catch return setError("out of memory"));
+    const package = model.decodePackageDetails(device.package_details_raw);
+    const summary = catalog.DeviceSummary{
+        .name = device.canonical_name,
+        .aliases = device.aliases,
+        .chip_type = device.chip_type,
+        .code_memory_size = device.code_memory_size,
+        .data_memory_size = device.data_memory_size,
+        .user_memory_size = device.data_memory2_size,
+        .package_pins = package.pin_count,
+        .page_size = device.page_size,
+        .chip_id = device.chip_id,
+        .chip_id_bytes_count = device.chip_id_bytes_count,
+        .blank_value = device.blank_value,
+        .supports_t48 = device.supports(.t48),
+        .supports_t56 = device.supports(.t56),
+    };
+    var out: std.Io.Writer.Allocating = .init(allocator());
+    defer out.deinit();
+    writeDeviceSummaryJson(&out.writer, summary) catch return setError("out of memory");
+    return setResult(out.toOwnedSlice() catch return setError("out of memory"));
+}
+
+export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, skip_id_check: u32, continue_on_id_mismatch: u32) u32 {
     const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
     const memory = memoryFromAbi(memory_value) catch return failStart("invalid memory kind");
     const device_name = sliceConst(device_ptr, device_len);
@@ -163,16 +196,20 @@ export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: 
         .descriptor = device.descriptor(.t48),
         .memory = memory,
         .skip_id_check = skip_id_check != 0,
+        .continue_on_id_mismatch = continue_on_id_mismatch != 0,
     };
     return @intCast(@intFromPtr(op));
 }
 
-export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, verify: u32, skip_id_check: u32) u32 {
+export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, verify: u32, skip_id_check: u32, continue_on_id_mismatch: u32, unprotect_before: u32, protect_after: u32) u32 {
     if (data_len == 0) return failStart("input data is empty");
     const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
     const memory = memoryFromAbi(memory_value) catch return failStart("invalid memory kind");
     const device_name = sliceConst(device_ptr, device_len);
     const device = catalog.find(device_name, programmer) catch return failStart("device not found or unsupported by requested programmer");
+    const size = memorySize(device, memory);
+    if (size == 0) return failStart("EmptyMemoryRegion");
+    if (data_len > size) return failStart("InputTooLarge");
     const data = allocator().dupe(u8, sliceConst(data_ptr, data_len)) catch return failStart("out of memory");
     const op = allocator().create(Operation) catch {
         allocator().free(data);
@@ -188,6 +225,9 @@ export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len:
         .erase = erase != 0,
         .verify = verify != 0,
         .skip_id_check = skip_id_check != 0,
+        .continue_on_id_mismatch = continue_on_id_mismatch != 0,
+        .unprotect_before = unprotect_before != 0,
+        .protect_after = protect_after != 0,
     };
     return @intCast(@intFromPtr(op));
 }
@@ -201,9 +241,16 @@ export fn mp_operation_next(handle: u32) u32 {
     const op = operationFromHandle(handle);
     if (op.awaiting) return @intFromEnum(op.transfer.kind);
     op.transfer = nextTransfer(op) catch |err| {
-        op.state = .failed;
-        op.error_code = errorCode(err);
-        _ = setError(@errorName(err));
+        setOperationError(op, err);
+        op.state = if (op.transaction_open) .send_abort_end else .failed;
+        if (op.state == .send_abort_end) {
+            op.transfer = nextTransfer(op) catch {
+                op.state = .failed;
+                return @intFromEnum(TransferKind.failed);
+            };
+            op.awaiting = op.transfer.kind == .out or op.transfer.kind == .in;
+            return @intFromEnum(op.transfer.kind);
+        }
         return @intFromEnum(TransferKind.failed);
     };
     op.awaiting = op.transfer.kind == .out or op.transfer.kind == .in;
@@ -227,13 +274,14 @@ export fn mp_operation_complete(handle: u32, status: u32, data_ptr: u32, data_le
     if (!op.awaiting) return setError("operation is not awaiting a transfer");
     op.awaiting = false;
     if (status != 0) {
-        op.state = .failed;
-        return setError("webusb transfer failed");
+        setOperationError(op, error.WebUSBTransferFailed);
+        op.state = if (op.transaction_open and op.state != .send_final_end and op.state != .send_abort_end) .send_abort_end else .failed;
+        return 1;
     }
     completeTransfer(op, sliceConst(data_ptr, data_len)) catch |err| {
-        op.state = .failed;
-        op.error_code = errorCode(err);
-        return setError(@errorName(err));
+        setOperationError(op, err);
+        op.state = if (op.transaction_open) .send_abort_end else .failed;
+        return 1;
     };
     return 0;
 }
@@ -241,10 +289,58 @@ export fn mp_operation_complete(handle: u32, status: u32, data_ptr: u32, data_le
 export fn mp_operation_result(handle: u32) u32 {
     const op = operationFromHandle(handle);
     if (op.state != .done) return setError("operation is not complete");
+    clearOperationResult(op);
     return switch (op.kind) {
-        .read => setResult(allocator().dupe(u8, op.data) catch return setError("out of memory")),
-        .write => setResult(allocator().dupe(u8, "null") catch return setError("out of memory")),
+        .read => setOperationResult(op, allocator().dupe(u8, op.data) catch return setError("out of memory")),
+        .write => setOperationResult(op, allocator().dupe(u8, "null") catch return setError("out of memory")),
     };
+}
+
+export fn mp_operation_result_ptr(handle: u32) u32 {
+    const op = operationFromHandle(handle);
+    return if (op.result.len == 0) 0 else @intCast(@intFromPtr(op.result.ptr));
+}
+
+export fn mp_operation_result_len(handle: u32) u32 {
+    return @intCast(operationFromHandle(handle).result.len);
+}
+
+export fn mp_operation_error_ptr(handle: u32) u32 {
+    const op = operationFromHandle(handle);
+    return if (op.error_message.len == 0) 0 else @intCast(@intFromPtr(op.error_message.ptr));
+}
+
+export fn mp_operation_error_len(handle: u32) u32 {
+    return @intCast(operationFromHandle(handle).error_message.len);
+}
+
+export fn mp_operation_error_code(handle: u32) u32 {
+    return operationFromHandle(handle).error_code;
+}
+
+export fn mp_operation_abort(handle: u32) u32 {
+    const op = operationFromHandle(handle);
+    op.awaiting = false;
+    setOperationError(op, error.OperationAborted);
+    op.state = if (op.transaction_open) .send_abort_end else .failed;
+    return 0;
+}
+
+export fn mp_operation_offset(handle: u32) u32 {
+    return @intCast(@min(operationFromHandle(handle).offset, std.math.maxInt(u32)));
+}
+
+export fn mp_operation_total(handle: u32) u32 {
+    const op = operationFromHandle(handle);
+    const total = switch (op.kind) {
+        .read => op.data.len,
+        .write => if (op.state == .verify_send_read_cmd or op.state == .verify_recv_read_payload) op.verify_data.len else op.data.len,
+    };
+    return @intCast(@min(total, std.math.maxInt(u32)));
+}
+
+export fn mp_operation_phase(handle: u32) u32 {
+    return phaseCode(operationFromHandle(handle).state);
 }
 
 fn nextTransfer(op: *Operation) !Transfer {
@@ -289,7 +385,12 @@ fn nextTransfer(op: *Operation) !Transfer {
             return outTransfer(op, endpoints.command, op.command[0..packet.erase_len]);
         },
         .recv_erase => return inTransfer(endpoints.command, packet.erase_response_len),
-        .send_end_after_erase => {
+        .send_protect_off, .send_protect_on => {
+            @memset(op.command[0..packet.short_command_len], 0);
+            op.command[0] = if (op.state == .send_protect_off) command.protect_off else command.protect_on;
+            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
+        },
+        .send_end_after_erase, .send_final_end, .send_abort_end => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.end_transaction;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
@@ -337,6 +438,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         .recv_info => {
             const info = session.parseSystemInfo(data) orelse return error.UnsupportedProgrammer;
             if (info.programmer != .t48 and info.programmer != .t56) return error.UnsupportedProgrammer;
+            if (info.status == .bootloader) return error.ProgrammerInBootloader;
             if (op.requested_programmer != .auto and op.requested_programmer != info.programmer) return error.ProgrammerMismatch;
             if (!op.device.supports(info.programmer)) return error.UnsupportedProgrammer;
             op.programmer = info.programmer;
@@ -346,15 +448,23 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 if (size == 0) return error.EmptyMemoryRegion;
                 op.data = try allocator().alloc(u8, size);
             } else {
-                if (op.data.len > memorySize(op.device, op.memory)) return error.InputTooLarge;
+                const size = memorySize(op.device, op.memory);
+                if (size == 0) return error.EmptyMemoryRegion;
+                if (op.data.len > size) return error.InputTooLarge;
                 if (op.verify) op.verify_data = try allocator().alloc(u8, op.data.len);
-                if (info.programmer == .t56) op.payload = try allocator().alloc(u8, @max(@as(usize, op.descriptor.write_buffer_size), 1));
+                if (info.programmer == .t56) {
+                    if (op.descriptor.write_buffer_size > packet.t56_padded_write_payload_max) return error.PayloadBufferTooSmall;
+                    op.payload = try allocator().alloc(u8, @max(@as(usize, op.descriptor.write_buffer_size), 1));
+                }
             }
             op.state = if (op.programmer == .t56) .send_t56_bitstream_header else .send_begin;
         },
         .send_t56_bitstream_header => op.state = .send_t56_bitstream_payload,
         .send_t56_bitstream_payload => op.state = .send_begin,
-        .send_begin => op.state = .send_begin_status,
+        .send_begin => {
+            op.transaction_open = true;
+            op.state = .send_begin_status;
+        },
         .send_begin_status => op.state = .recv_begin_status,
         .recv_begin_status => {
             try checkStatus(data);
@@ -370,15 +480,22 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             try checkStatus(data);
             op.state = .send_end_after_erase;
         },
-        .send_end_after_erase => op.state = if (op.programmer == .t56) .send_second_t56_bitstream_header else .send_second_begin,
+        .send_end_after_erase => {
+            op.transaction_open = false;
+            op.state = if (op.programmer == .t56) .send_second_t56_bitstream_header else .send_second_begin;
+        },
         .send_second_t56_bitstream_header => op.state = .send_second_t56_bitstream_payload,
         .send_second_t56_bitstream_payload => op.state = .send_second_begin,
-        .send_second_begin => op.state = .send_second_status,
+        .send_second_begin => {
+            op.transaction_open = true;
+            op.state = .send_second_status;
+        },
         .send_second_status => op.state = .recv_second_status,
         .recv_second_status => {
             try checkStatus(data);
-            op.state = .send_write_cmd;
+            op.state = if (op.unprotect_before) .send_protect_off else .send_write_cmd;
         },
+        .send_protect_off => op.state = .send_write_cmd,
         .send_write_cmd => op.state = .send_write_payload,
         .send_write_payload => op.state = .send_write_status,
         .send_write_status => op.state = .recv_write_status,
@@ -389,9 +506,18 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 op.state = .send_write_cmd;
             } else if (op.verify) {
                 op.offset = 0;
+                op.state = if (op.protect_after) .send_protect_on else .verify_send_read_cmd;
+            } else if (op.protect_after) {
+                op.state = .send_protect_on;
+            } else {
+                op.state = .send_final_end;
+            }
+        },
+        .send_protect_on => {
+            if (op.verify) {
                 op.state = .verify_send_read_cmd;
             } else {
-                op.state = .done;
+                op.state = .send_final_end;
             }
         },
         .send_read_cmd => op.state = .recv_read_payload,
@@ -401,7 +527,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             if (source.len < len) return error.ShortRead;
             @memcpy(op.data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
-            op.state = if (op.offset < op.data.len) .send_read_cmd else .done;
+            op.state = if (op.offset < op.data.len) .send_read_cmd else .send_final_end;
         },
         .verify_send_read_cmd => op.state = .verify_recv_read_payload,
         .verify_recv_read_payload => {
@@ -413,10 +539,18 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             if (op.offset < op.verify_data.len) {
                 op.state = .verify_send_read_cmd;
             } else if (std.mem.eql(u8, op.data, op.verify_data)) {
-                op.state = .done;
+                op.state = .send_final_end;
             } else {
                 return error.VerifyFailed;
             }
+        },
+        .send_final_end => {
+            op.transaction_open = false;
+            op.state = .done;
+        },
+        .send_abort_end => {
+            op.transaction_open = false;
+            op.state = .failed;
         },
         .done, .failed => {},
     }
@@ -479,7 +613,7 @@ fn shouldCheckChipId(op: *Operation) bool {
 fn afterChipIdState(op: *Operation) State {
     return switch (op.kind) {
         .read => .send_read_cmd,
-        .write => if (op.erase) .send_erase else .send_write_cmd,
+        .write => if (op.erase) .send_erase else if (op.unprotect_before) .send_protect_off else .send_write_cmd,
     };
 }
 
@@ -495,7 +629,7 @@ fn checkChipId(op: *Operation, data: []const u8) !void {
     const id_len = @min(op.device.chip_id_bytes_count, 4);
     const byte_order: endian.Endian = if (id_type == 3 or id_type == 4) .little else .big;
     const actual: u32 = if (id_len == 0) 0 else @intCast(endian.loadInt(data[2 .. 2 + id_len], byte_order));
-    if (actual != op.device.chip_id) return error.ChipIdMismatch;
+    if (actual != op.device.chip_id and !op.continue_on_id_mismatch) return error.ChipIdMismatch;
 }
 
 fn programmerFromAbi(value: u32) !model.Programmer {
@@ -544,6 +678,52 @@ fn writeJsonString(writer: anytype, text: []const u8) !void {
     try writer.writeByte('"');
 }
 
+fn writeJsonStringArray(writer: anytype, values: []const []const u8) !void {
+    try writer.writeByte('[');
+    for (values, 0..) |value, index| {
+        if (index != 0) try writer.writeByte(',');
+        try writeJsonString(writer, value);
+    }
+    try writer.writeByte(']');
+}
+
+fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void {
+    try writer.writeAll("{\"name\":");
+    try writeJsonString(writer, summary.name);
+    try writer.writeAll(",\"aliases\":");
+    try writeJsonStringArray(writer, summary.aliases);
+    try writer.writeAll(",\"chipType\":");
+    try writeJsonString(writer, chipTypeName(summary.chip_type));
+    try writer.print(
+        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"supportsT48\":{},\"supportsT56\":{}}}",
+        .{
+            summary.code_memory_size,
+            summary.data_memory_size,
+            summary.user_memory_size,
+            summary.package_pins,
+            summary.page_size,
+            summary.chip_id,
+            summary.chip_id_bytes_count,
+            summary.blank_value,
+            summary.supports_t48,
+            summary.supports_t56,
+        },
+    );
+}
+
+fn chipTypeName(chip_type: model.ChipType) []const u8 {
+    return switch (chip_type) {
+        .memory => "memory",
+        .mcu => "mcu",
+        .pld => "pld",
+        .sram => "sram",
+        .logic => "logic",
+        .nand => "nand",
+        .emmc => "emmc",
+        .vga => "vga",
+    };
+}
+
 fn setResult(bytes: []u8) u32 {
     clearLastResult();
     clearLastError();
@@ -570,6 +750,32 @@ fn clearLastError() void {
     last_error = &.{};
 }
 
+fn setOperationResult(op: *Operation, bytes: []u8) u32 {
+    clearOperationResult(op);
+    clearOperationError(op);
+    op.result = bytes;
+    return 0;
+}
+
+fn clearOperationResult(op: *Operation) void {
+    if (op.result.len == 0) return;
+    allocator().free(op.result);
+    op.result = &.{};
+}
+
+fn setOperationError(op: *Operation, err: anyerror) void {
+    clearOperationError(op);
+    clearOperationResult(op);
+    op.error_code = errorCode(err);
+    op.error_message = allocator().dupe(u8, @errorName(err)) catch &.{};
+}
+
+fn clearOperationError(op: *Operation) void {
+    if (op.error_message.len == 0) return;
+    allocator().free(op.error_message);
+    op.error_message = &.{};
+}
+
 fn resetAbiGlobalsForTest() void {
     if (!comptime builtin.is_test) return;
     clearLastResult();
@@ -587,7 +793,27 @@ fn errorCode(err: anyerror) u32 {
         error.VerifyFailed => 16,
         error.AlgorithmUnavailable => 17,
         error.PayloadBufferTooSmall => 18,
+        error.EmptyMemoryRegion => 19,
+        error.InputTooLarge => 20,
+        error.ProgrammerInBootloader => 21,
+        error.OperationAborted => 22,
+        error.WebUSBTransferFailed => 23,
+        error.ShortRead => 24,
         else => 1,
+    };
+}
+
+fn phaseCode(state: State) u32 {
+    return switch (state) {
+        .send_info, .recv_info, .send_t56_bitstream_header, .send_t56_bitstream_payload, .send_begin, .send_begin_status, .recv_begin_status, .send_second_t56_bitstream_header, .send_second_t56_bitstream_payload, .send_second_begin, .send_second_status, .recv_second_status => 1,
+        .send_chip_id, .recv_chip_id => 2,
+        .send_erase, .recv_erase, .send_end_after_erase => 3,
+        .send_protect_off, .send_write_cmd, .send_write_payload, .send_write_status, .recv_write_status, .send_protect_on => 4,
+        .send_read_cmd, .recv_read_payload => 5,
+        .verify_send_read_cmd, .verify_recv_read_payload => 6,
+        .send_final_end, .send_abort_end => 7,
+        .done => 8,
+        .failed => 9,
     };
 }
 
@@ -618,7 +844,7 @@ test "JSON string writer escapes generated catalog names" {
 test "Wasm start write rejects empty input before operation allocation" {
     defer resetAbiGlobalsForTest();
 
-    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 0, 1, 1, 0);
+    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0);
     try std.testing.expectEqual(@as(u32, 0), rc);
     try std.testing.expectEqualStrings("input data is empty", last_error);
 }
@@ -696,6 +922,8 @@ test "T48 Wasm write operation sequences erase write status and verify transfers
     try completeTransfer(&op, &.{});
     try expectNextTransfer(&op, .in, 2, 4); // T48 read payload endpoint
     try completeTransfer(&op, data);
+    try expectNextTransfer(&op, .out, 1, 8); // final end transaction
+    try completeTransfer(&op, &.{});
     try std.testing.expectEqual(State.done, op.state);
 }
 

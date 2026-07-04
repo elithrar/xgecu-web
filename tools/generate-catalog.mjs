@@ -113,6 +113,9 @@ function validateDevice(device, index) {
   for (const programmer of device.programmers) {
     if (programmer !== "t48" && programmer !== "t56") throw new Error(`${label}.programmers contains unsupported programmer ${programmer}`);
   }
+  if (device.programmers.includes("t56") && !device.t56AlgorithmHex && !device.t56AlgorithmBase64) {
+    throw new Error(`${label}.programmers includes t56 but no T56 algorithm payload is present`);
+  }
   if (device.t56AlgorithmHex && device.t56AlgorithmBase64) {
     throw new Error(`${label} must use only one T56 algorithm encoding`);
   }

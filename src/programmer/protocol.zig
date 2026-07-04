@@ -9,6 +9,7 @@ const transport = @import("transport.zig");
 
 pub const Error = t48.Error || t56.Error || std.mem.Allocator.Error || error{
     UnsupportedProgrammer,
+    ProgrammerInBootloader,
     AlgorithmUnavailable,
     ChipIdMismatch,
     ProgrammerStatusError,

@@ -26,11 +26,13 @@ Supported programmer hardware is limited to T48/T56. The browser chooser filters
 Example transfer loop shape:
 
 ```ts
-import { WasmBridge, createProgrammer, performWebUSBTransfer } from "xgecu-web";
+import { BrowserXgecuWebUSB, WasmBridge, performWebUSBTransfer } from "xgecu-web";
 
-const api = await createProgrammer();
-const programmer = await api.requestProgrammer();
 const wasm = await WasmBridge.load();
+const api = new BrowserXgecuWebUSB(wasm);
+const requested = await api.requestProgrammer();
+if (requested.status === "error") throw requested.error;
+const programmer = requested.value;
 
 try {
   const handle = wasm.startReadROM({
@@ -53,3 +55,4 @@ try {
 Most browser apps should call `api.readROM()` and `api.writeROM()` instead of using this lower-level loop directly.
 
 `performWebUSBTransfer()` validates WebUSB transfer statuses and short writes. `WebUSBProgrammerConnection.close()` attempts to release interface 0 when this API claimed it, then closes the device even if interface release fails.
+High-level browser APIs serialize ROM operations per programmer connection and return `better-result` `Result` values for expected failures.

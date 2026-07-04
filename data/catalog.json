@@ -4,7 +4,7 @@
     {
       "canonicalName": "AT28C64B@DIP28",
       "aliases": ["AT28C64B", "AT28C64B@DIP28", "AT28C64B-15PU"],
-      "programmers": ["t48", "t56"],
+      "programmers": ["t48"],
       "chipType": "memory",
       "protocolId": "0x07",
       "variant": "0x0000",
@@ -24,7 +24,7 @@
     {
       "canonicalName": "M27C64A@DIP28",
       "aliases": ["M27C64A", "M27C64A@DIP28", "27C64"],
-      "programmers": ["t48", "t56"],
+      "programmers": ["t48"],
       "chipType": "memory",
       "protocolId": "0x07",
       "variant": "0x0000",
@@ -45,7 +45,7 @@
     {
       "canonicalName": "W25Q32JV@SOIC8",
       "aliases": ["W25Q32JV", "W25Q32JV@SOIC8", "W25Q32"],
-      "programmers": ["t48", "t56"],
+      "programmers": ["t48"],
       "chipType": "memory",
       "protocolId": "0x03",
       "variant": "0x0000",
@@ -61,7 +61,7 @@
       "readBufferSize": 512,
       "writeBufferSize": 256,
       "flagsRaw": "0x00000030",
-      "chipId": "0xef4016",
+      "chipId": "0xef4017",
       "chipIdBytesCount": 3
     }
   ]
