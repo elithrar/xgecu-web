@@ -21,7 +21,6 @@ pub fn decode(allocator: std.mem.Allocator, programmer: model.Programmer, base64
 
     return switch (programmer) {
         .t56 => padT56(allocator, inflated),
-        .t76 => expandT76(allocator, inflated),
         else => error.UnsupportedProgrammer,
     };
 }
@@ -59,38 +58,6 @@ pub fn padT56(allocator: std.mem.Allocator, bitstream: []const u8) ![]u8 {
     return out;
 }
 
-pub fn expandT76(allocator: std.mem.Allocator, bitstream: []const u8) ![]u8 {
-    if (bitstream.len < algo_data_offset) return error.InvalidAlgorithm;
-    if ((bitstream.len - algo_data_offset) % 2 != 0) return error.InvalidAlgorithm;
-
-    const out_len: usize = @intCast(endian.loadInt(bitstream[algo_size_offset .. algo_size_offset + 4], .little));
-    if (out_len % 2 != 0) return error.InvalidAlgorithm;
-
-    const out = try allocator.alloc(u8, out_len);
-    errdefer allocator.free(out);
-    @memset(out, 0);
-
-    var in_index: usize = algo_data_offset;
-    var out_index: usize = 0;
-    while (in_index < bitstream.len) {
-        const value: u16 = @intCast(endian.loadInt(bitstream[in_index .. in_index + 2], .little));
-        in_index += 2;
-        if (value != 0) {
-            if (out_index + 2 > out.len) return error.InvalidAlgorithm;
-            endian.storeInt(out[out_index .. out_index + 2], value, .little);
-            out_index += 2;
-        } else {
-            if (in_index + 2 > bitstream.len) return error.InvalidAlgorithm;
-            const zero_words: usize = @intCast(endian.loadInt(bitstream[in_index .. in_index + 2], .little));
-            in_index += 2;
-            if (out_index + zero_words * 2 > out.len) return error.InvalidAlgorithm;
-            out_index += zero_words * 2;
-        }
-    }
-    if (out_index != out.len) return error.InvalidAlgorithm;
-    return out;
-}
-
 test "decode base64 payload" {
     const decoded = try decodeBase64(std.testing.allocator, "AQIDBA==");
     defer std.testing.allocator.free(decoded);
@@ -110,17 +77,3 @@ test "validate algorithm CRC and T56 padding" {
     try std.testing.expectEqualSlices(u8, &bitstream, padded[0..bitstream.len]);
 }
 
-test "expand T76 zero-run encoded bitstream" {
-    var encoded = [_]u8{0} ** 16;
-    endian.storeInt(encoded[0..4], 8, .little);
-    endian.storeInt(encoded[8..10], 0x1234, .little);
-    endian.storeInt(encoded[10..12], 0, .little);
-    endian.storeInt(encoded[12..14], 2, .little);
-    endian.storeInt(encoded[14..16], 0xabcd, .little);
-    endian.storeInt(encoded[4..8], crc.crc32(encoded[8..], 0xffffffff), .little);
-
-    try validateCrc(&encoded);
-    const expanded = try expandT76(std.testing.allocator, &encoded);
-    defer std.testing.allocator.free(expanded);
-    try std.testing.expectEqualSlices(u8, &.{ 0x34, 0x12, 0, 0, 0, 0, 0xcd, 0xab }, expanded);
-}

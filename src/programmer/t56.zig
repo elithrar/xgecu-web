@@ -4,31 +4,12 @@ const std = @import("std");
 const endian = @import("../core/endian.zig");
 const logic = @import("../core/logic.zig");
 const model = @import("../core/model.zig");
+const protocol_bytes = @import("protocol_bytes.zig");
 const transport = @import("transport.zig");
 const t48 = @import("t48.zig");
 
-const t56_begin_trans = 0x03;
-const t56_end_trans = 0x04;
-const t56_read_id = 0x05;
-const t56_read_user = 0x06;
-const t56_write_user = 0x07;
-const t56_read_cfg = 0x08;
-const t56_write_cfg = 0x09;
-const t56_write_user_data = 0x0a;
-const t56_read_user_data = 0x0b;
-const t56_write_code = 0x0c;
-const t56_read_code = 0x0d;
-const t56_erase = 0x0e;
-const t56_read_data = 0x10;
-const t56_write_data = 0x11;
-const t56_write_lock = 0x14;
-const t56_read_lock = 0x15;
-const t56_protect_off = 0x18;
-const t56_protect_on = 0x19;
-const t56_read_jedec = 0x1d;
-const t56_write_jedec = 0x1e;
-const t56_write_bitstream = 0x26;
-const t56_request_status = 0x39;
+const command = protocol_bytes.command;
+const packet = protocol_bytes.packet;
 
 pub const Error = transport.Error || error{
     Overcurrent,
@@ -41,8 +22,8 @@ pub const ChipId = t48.ChipId;
 pub const JedecRow = t48.JedecRow;
 
 pub fn uploadBitstream(trans: transport.Transport, bitstream: []const u8) Error!void {
-    var msg = [_]u8{0} ** 8;
-    msg[0] = t56_write_bitstream;
+    var msg = [_]u8{0} ** packet.bitstream_header_len;
+    msg[0] = command.write_bitstream;
     endian.storeInt(msg[4..8], bitstream.len, .little);
     try trans.send(&msg);
     try trans.send(bitstream);
@@ -51,31 +32,8 @@ pub fn uploadBitstream(trans: transport.Transport, bitstream: []const u8) Error!
 pub fn beginTransaction(trans: transport.Transport, device: Device, bitstream: []const u8) Error!void {
     try uploadBitstream(trans, bitstream);
 
-    var msg = [_]u8{0} ** 64;
-    msg[0] = t56_begin_trans;
-    msg[1] = device.protocol_id;
-    msg[2] = @intCast(device.variant & 0xff);
-    msg[3] = device.icsp;
-    endian.storeInt(msg[4..6], device.voltages_raw, .little);
-    msg[6] = @intCast(device.chip_info & 0xff);
-    msg[7] = @intCast(device.pin_map & 0xff);
-    endian.storeInt(msg[8..10], device.data_memory_size, .little);
-    endian.storeInt(msg[10..12], device.page_size, .little);
-    endian.storeInt(msg[12..14], device.pulse_delay, .little);
-    endian.storeInt(msg[14..16], device.data_memory2_size, .little);
-    endian.storeInt(msg[16..20], device.code_memory_size, .little);
-    msg[20] = @intCast((device.voltages_raw >> 16) & 0xff);
-    if (device.voltages_raw & 0xf0 == 0xf0) {
-        msg[22] = @intCast(device.voltages_raw & 0xff);
-    } else {
-        msg[21] = @intCast(device.voltages_raw & 0x0f);
-        msg[22] = @intCast(device.voltages_raw & 0xf0);
-    }
-    if (device.voltages_raw & 0x80000000 != 0) msg[22] = @intCast((device.voltages_raw >> 16) & 0x0f);
-    if (device.can_adjust_clock) msg[28] = device.spi_clock;
-    endian.storeInt(msg[40..44], device.package_details_raw, .little);
-    endian.storeInt(msg[44..46], device.read_buffer_size, .little);
-    endian.storeInt(msg[56..60], device.flags_raw, .little);
+    var msg: [packet.begin_len]u8 = undefined;
+    t48.writeBeginPacket(&msg, .t56, device);
 
     try trans.send(&msg);
     const status = try requestStatus(trans);
@@ -83,53 +41,55 @@ pub fn beginTransaction(trans: transport.Transport, device: Device, bitstream: [
 }
 
 pub fn endTransaction(trans: transport.Transport) Error!void {
-    var msg = [_]u8{0} ** 8;
-    msg[0] = t56_end_trans;
+    var msg = [_]u8{0} ** packet.short_command_len;
+    msg[0] = command.end_transaction;
     try trans.send(&msg);
 }
 
 pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u32, out: []u8) Error!void {
-    var msg = [_]u8{0} ** 64;
-    msg[0] = try readCommand(kind);
+    if (out.len > packet.t56_read_payload_max) return transport.Error.Io;
+
+    var msg = [_]u8{0} ** packet.begin_len;
+    msg[0] = readCommand(kind);
     endian.storeInt(msg[2..4], out.len, .little);
     endian.storeInt(msg[4..8], address, .little);
-    try trans.send(msg[0..8]);
+    try trans.send(msg[0..packet.short_command_len]);
 
-    // Upstream asks libusb for a slightly larger buffer to tolerate a T56 firmware off-by-one bug.
-    var response = [_]u8{0} ** 80;
-    if (out.len > response.len - 16) return transport.Error.Io;
-    _ = try trans.recv(response[0 .. out.len + 16]);
+    // Upstream asks for a slightly larger USB buffer to tolerate a T56 firmware off-by-one bug.
+    var response = [_]u8{0} ** (packet.t56_read_payload_max + packet.t56_read_status_slop);
+    _ = try trans.recv(response[0 .. out.len + packet.t56_read_status_slop]);
     @memcpy(out, response[0..out.len]);
 }
 
 pub fn writeBlock(trans: transport.Transport, device: Device, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
-    var msg = [_]u8{0} ** 8;
-    msg[0] = try writeCommand(kind);
+    if (device.write_buffer_size > packet.t56_padded_write_payload_max or data.len > device.write_buffer_size) return transport.Error.Io;
+
+    var msg = [_]u8{0} ** packet.short_command_len;
+    msg[0] = writeCommand(kind);
     endian.storeInt(msg[2..4], data.len, .little);
     endian.storeInt(msg[4..8], address, .little);
     try trans.send(&msg);
 
-    var buffer = [_]u8{0} ** 4096;
-    if (device.write_buffer_size > buffer.len or data.len > device.write_buffer_size) return transport.Error.Io;
+    var buffer = [_]u8{0} ** packet.t56_padded_write_payload_max;
     @memcpy(buffer[0..data.len], data);
     try trans.send(buffer[0..device.write_buffer_size]);
 }
 
 pub fn readFuses(trans: transport.Transport, device: Device, kind: FuseKind, items_count: u8, out: []u8) Error!void {
-    var msg = [_]u8{0} ** 64;
+    var msg = [_]u8{0} ** packet.fuse_len;
+    if (out.len > msg.len - packet.short_command_len) return transport.Error.Io;
     msg[0] = readFuseCommand(kind);
     msg[1] = device.protocol_id;
     msg[2] = items_count;
     endian.storeInt(msg[4..8], device.code_memory_size, .little);
-    try trans.send(msg[0..8]);
+    try trans.send(msg[0..packet.short_command_len]);
     _ = try trans.recv(&msg);
-    if (out.len > msg.len - 8) return transport.Error.Io;
     @memcpy(out, msg[8 .. 8 + out.len]);
 }
 
 pub fn writeFuses(trans: transport.Transport, device: Device, kind: FuseKind, items_count: u8, data: []const u8) Error!void {
-    var msg = [_]u8{0} ** 64;
-    if (data.len > msg.len - 8) return transport.Error.Io;
+    var msg = [_]u8{0} ** packet.fuse_len;
+    if (data.len > msg.len - packet.short_command_len) return transport.Error.Io;
     msg[0] = writeFuseCommand(kind);
     msg[1] = device.protocol_id;
     msg[2] = items_count;
@@ -139,11 +99,11 @@ pub fn writeFuses(trans: transport.Transport, device: Device, kind: FuseKind, it
 }
 
 pub fn getChipId(trans: transport.Transport, chip_id_bytes_count: u8) Error!ChipId {
-    var request = [_]u8{0} ** 8;
-    request[0] = t56_read_id;
+    var request = [_]u8{0} ** packet.short_command_len;
+    request[0] = command.read_id;
     try trans.send(&request);
 
-    var response = [_]u8{0} ** 32;
+    var response = [_]u8{0} ** packet.chip_id_len;
     _ = try trans.recv(&response);
     const id_type = response[0];
     const id_length = @min(chip_id_bytes_count, 4);
@@ -159,46 +119,46 @@ pub fn spiAutodetect(trans: transport.Transport, package_pins: u8) t48.Error!u32
 }
 
 pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
-    var msg = [_]u8{0} ** 15;
-    msg[0] = t56_erase;
+    var msg = [_]u8{0} ** packet.erase_len;
+    msg[0] = command.erase;
     msg[2] = num_fuses;
     msg[4] = pld;
     try trans.send(&msg);
-    var response = [_]u8{0} ** 64;
+    var response = [_]u8{0} ** packet.erase_response_len;
     _ = try trans.recv(&response);
 }
 
 pub fn protectOff(trans: transport.Transport) Error!void {
-    var msg = [_]u8{0} ** 8;
-    msg[0] = t56_protect_off;
+    var msg = [_]u8{0} ** packet.short_command_len;
+    msg[0] = command.protect_off;
     try trans.send(&msg);
 }
 
 pub fn protectOn(trans: transport.Transport) Error!void {
-    var msg = [_]u8{0} ** 8;
-    msg[0] = t56_protect_on;
+    var msg = [_]u8{0} ** packet.short_command_len;
+    msg[0] = command.protect_on;
     try trans.send(&msg);
 }
 
 pub fn readJedecRow(trans: transport.Transport, device: Device, row: JedecRow) Error!void {
-    var msg = [_]u8{0} ** 32;
-    msg[0] = t56_read_jedec;
+    var msg = [_]u8{0} ** packet.jedec_read_len;
+    const byte_count = rowByteCount(row.size_bits);
+    if (row.data.len < byte_count) return transport.Error.Io;
+    msg[0] = command.read_jedec;
     msg[1] = device.protocol_id;
     msg[2] = row.size_bits;
     msg[4] = row.row;
     msg[5] = row.flags;
-    try trans.send(msg[0..8]);
+    try trans.send(msg[0..packet.short_command_len]);
     _ = try trans.recv(&msg);
-    const byte_count = rowByteCount(row.size_bits);
-    if (row.data.len < byte_count) return transport.Error.Io;
     @memcpy(row.data[0..byte_count], msg[0..byte_count]);
 }
 
 pub fn writeJedecRow(trans: transport.Transport, device: Device, row: JedecRow) Error!void {
-    var msg = [_]u8{0} ** 64;
+    var msg = [_]u8{0} ** packet.jedec_write_len;
     const byte_count = rowByteCount(row.size_bits);
     if (row.data.len < byte_count) return transport.Error.Io;
-    msg[0] = t56_write_jedec;
+    msg[0] = command.write_jedec;
     msg[1] = device.protocol_id;
     msg[2] = row.size_bits;
     msg[4] = row.row;
@@ -208,11 +168,11 @@ pub fn writeJedecRow(trans: transport.Transport, device: Device, row: JedecRow) 
 }
 
 pub fn requestStatus(trans: transport.Transport) Error!Status {
-    var request = [_]u8{0} ** 8;
-    request[0] = t56_request_status;
+    var request = [_]u8{0} ** packet.short_command_len;
+    request[0] = command.request_status;
     try trans.send(&request);
 
-    var response = [_]u8{0} ** 32;
+    var response = [_]u8{0} ** packet.status_len;
     _ = try trans.recv(&response);
     return .{
         .error_code = response[0],
@@ -227,35 +187,35 @@ pub fn testLogicVector(trans: transport.Transport, vcc_index: u8, pull_down: boo
     return t48.testLogicVector(trans, vcc_index, pull_down, pin_count, vector_index, states, out);
 }
 
-fn readCommand(kind: model.MemoryKind) !u8 {
+fn readCommand(kind: model.MemoryKind) u8 {
     return switch (kind) {
-        .code => t56_read_code,
-        .data => t56_read_data,
-        .user => t56_read_user_data,
+        .code => command.read_code,
+        .data => command.read_data,
+        .user => command.read_user_data,
     };
 }
 
-fn writeCommand(kind: model.MemoryKind) !u8 {
+fn writeCommand(kind: model.MemoryKind) u8 {
     return switch (kind) {
-        .code => t56_write_code,
-        .data => t56_write_data,
-        .user => t56_write_user_data,
+        .code => command.write_code,
+        .data => command.write_data,
+        .user => command.write_user_data,
     };
 }
 
 fn readFuseCommand(kind: FuseKind) u8 {
     return switch (kind) {
-        .user => t56_read_user,
-        .config => t56_read_cfg,
-        .lock => t56_read_lock,
+        .user => command.read_user,
+        .config => command.read_config,
+        .lock => command.read_lock,
     };
 }
 
 fn writeFuseCommand(kind: FuseKind) u8 {
     return switch (kind) {
-        .user => t56_write_user,
-        .config => t56_write_cfg,
-        .lock => t56_write_lock,
+        .user => command.write_user,
+        .config => command.write_config,
+        .lock => command.write_lock,
     };
 }
 
@@ -296,17 +256,17 @@ test "begin T56 transaction uploads bitstream before begin packet" {
 
     try beginTransaction(fake.transport(), device, &.{ 0xaa, 0xbb });
     try std.testing.expectEqual(@as(usize, 8 + 2 + 64 + 8), fake.sent.items.len);
-    try std.testing.expectEqual(@as(u8, t56_write_bitstream), fake.sent.items[0]);
+    try std.testing.expectEqual(@as(u8, command.write_bitstream), fake.sent.items[0]);
     try std.testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0 }, fake.sent.items[4..8]);
     try std.testing.expectEqualSlices(u8, &.{ 0xaa, 0xbb }, fake.sent.items[8..10]);
 
     const begin = fake.sent.items[10..74];
-    try std.testing.expectEqual(@as(u8, t56_begin_trans), begin[0]);
+    try std.testing.expectEqual(@as(u8, command.begin_transaction), begin[0]);
     try std.testing.expectEqual(@as(u8, 0x07), begin[1]);
     try std.testing.expectEqual(@as(u8, 0x01), begin[2]);
     try std.testing.expectEqualSlices(u8, &.{ 0x56, 0x34, 0x12, 0x00 }, begin[16..20]);
     try std.testing.expectEqualSlices(u8, &.{ 0xdd, 0xcc, 0xbb, 0xaa }, begin[40..44]);
-    try std.testing.expectEqual(@as(u8, t56_request_status), fake.sent.items[74]);
+    try std.testing.expectEqual(@as(u8, command.request_status), fake.sent.items[74]);
 }
 
 test "read and write T56 memory blocks" {
@@ -337,6 +297,38 @@ test "read and write T56 memory blocks" {
     try writeBlock(fake.transport(), device, .data, 0x20, &.{ 9, 8, 7 });
     try std.testing.expectEqualSlices(u8, &.{ 0x11, 0, 3, 0, 0x20, 0, 0, 0 }, fake.sent.items[8..16]);
     try std.testing.expectEqualSlices(u8, &.{ 9, 8, 7, 0, 0, 0, 0, 0 }, fake.sent.items[16..24]);
+}
+
+test "T56 memory blocks reject oversized buffers before sending" {
+    var response = [_]u8{0} ** 1;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    var out = [_]u8{0} ** (packet.t56_read_payload_max + 1);
+    try std.testing.expectError(transport.Error.Io, readBlock(fake.transport(), .code, 0, &out));
+
+    var device = Device{
+        .protocol_id = 0x07,
+        .variant = 0,
+        .voltages_raw = 0,
+        .chip_info = 0,
+        .pin_map = 0,
+        .data_memory_size = 0,
+        .data_memory2_size = 0,
+        .page_size = 0,
+        .pulse_delay = 0,
+        .code_memory_size = 0,
+        .package_details_raw = 0,
+        .read_buffer_size = 0,
+        .write_buffer_size = 2,
+        .flags_raw = 0,
+    };
+    try std.testing.expectError(transport.Error.Io, writeBlock(fake.transport(), device, .data, 0, &.{ 1, 2, 3 }));
+
+    device.write_buffer_size = packet.t56_padded_write_payload_max + 1;
+    try std.testing.expectError(transport.Error.Io, writeBlock(fake.transport(), device, .data, 0, &.{1}));
+
+    try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
 }
 
 test "read and write T56 fuses and chip ID" {
@@ -381,7 +373,7 @@ test "read and write T56 fuses and chip ID" {
     try std.testing.expectEqual(@as(u32, 0x1234), id.value);
 }
 
-test "erase and protect commands send upstream T56 opcodes" {
+test "erase and protect commands send expected T56 opcodes" {
     var response = [_]u8{0} ** 64;
     var fake = transport.FakeTransport.init(std.testing.allocator, &response);
     defer fake.deinit();
@@ -391,11 +383,11 @@ test "erase and protect commands send upstream T56 opcodes" {
     try protectOn(fake.transport());
 
     try std.testing.expectEqual(@as(usize, 15 + 8 + 8), fake.sent.items.len);
-    try std.testing.expectEqual(@as(u8, t56_erase), fake.sent.items[0]);
+    try std.testing.expectEqual(@as(u8, command.erase), fake.sent.items[0]);
     try std.testing.expectEqual(@as(u8, 2), fake.sent.items[2]);
     try std.testing.expectEqual(@as(u8, 0x3f), fake.sent.items[4]);
-    try std.testing.expectEqual(@as(u8, t56_protect_off), fake.sent.items[15]);
-    try std.testing.expectEqual(@as(u8, t56_protect_on), fake.sent.items[23]);
+    try std.testing.expectEqual(@as(u8, command.protect_off), fake.sent.items[15]);
+    try std.testing.expectEqual(@as(u8, command.protect_on), fake.sent.items[23]);
 }
 
 test "read and write T56 JEDEC rows" {
@@ -429,7 +421,7 @@ test "read and write T56 JEDEC rows" {
 
     var write_data = [_]u8{ 0xab, 0xcd };
     try writeJedecRow(fake.transport(), device, .{ .data = &write_data, .size_bits = 16, .row = 8, .flags = 4 });
-    try std.testing.expectEqual(@as(u8, t56_write_jedec), fake.sent.items[8]);
+    try std.testing.expectEqual(@as(u8, command.write_jedec), fake.sent.items[8]);
     try std.testing.expectEqual(@as(u8, 0x2a), fake.sent.items[9]);
     try std.testing.expectEqual(@as(u8, 16), fake.sent.items[10]);
     try std.testing.expectEqual(@as(u8, 8), fake.sent.items[12]);

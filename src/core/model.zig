@@ -4,43 +4,31 @@ const std = @import("std");
 
 pub const Programmer = enum {
     auto,
-    tl866a,
-    tl866ii,
     t48,
     t56,
-    t76,
 
-    pub const supported = [_]Programmer{ .tl866a, .tl866ii, .t48, .t56, .t76 };
+    pub const supported = [_]Programmer{ .t48, .t56 };
 
     pub fn parse(text: []const u8) ?Programmer {
         if (std.ascii.eqlIgnoreCase(text, "auto")) return .auto;
-        if (std.ascii.eqlIgnoreCase(text, "tl866a") or std.ascii.eqlIgnoreCase(text, "tl866cs")) return .tl866a;
-        if (std.ascii.eqlIgnoreCase(text, "tl866ii") or std.ascii.eqlIgnoreCase(text, "tl866ii+") or std.ascii.eqlIgnoreCase(text, "tl866iiplus")) return .tl866ii;
         if (std.ascii.eqlIgnoreCase(text, "t48")) return .t48;
         if (std.ascii.eqlIgnoreCase(text, "t56")) return .t56;
-        if (std.ascii.eqlIgnoreCase(text, "t76")) return .t76;
         return null;
     }
 
     pub fn name(self: Programmer) []const u8 {
         return switch (self) {
             .auto => "auto",
-            .tl866a => "tl866a",
-            .tl866ii => "tl866ii",
             .t48 => "t48",
             .t56 => "t56",
-            .t76 => "t76",
         };
     }
 
     pub fn label(self: Programmer) []const u8 {
         return switch (self) {
             .auto => "auto",
-            .tl866a => "TL866A/CS",
-            .tl866ii => "TL866II+",
             .t48 => "T48",
             .t56 => "T56",
-            .t76 => "T76",
         };
     }
 };
@@ -192,14 +180,15 @@ fn getPinCount(raw: u32) u8 {
     };
 }
 
-test "programmer parser accepts legacy names" {
-    try std.testing.expectEqual(Programmer.tl866a, Programmer.parse("TL866CS").?);
-    try std.testing.expectEqual(Programmer.tl866ii, Programmer.parse("TL866II+").?);
-    try std.testing.expectEqual(Programmer.t76, Programmer.parse("t76").?);
-    try std.testing.expect(Programmer.parse("t866") == null);
+test "programmer parser accepts supported names only" {
+    try std.testing.expectEqual(Programmer.t48, Programmer.parse("T48").?);
+    try std.testing.expectEqual(Programmer.t56, Programmer.parse("t56").?);
+    try std.testing.expect(Programmer.parse("t47") == null);
+    try std.testing.expect(Programmer.parse("t57") == null);
+    try std.testing.expect(Programmer.parse("programmer") == null);
 }
 
-test "decode flags matches upstream masks" {
+test "decode flags matches catalog masks" {
     const decoded = decodeFlags(0x003cf032, 0x00003123, mp_voltages1, custom_protocol_mask | 1);
     try std.testing.expect(decoded.can_erase);
     try std.testing.expect(decoded.has_chip_id);

@@ -1,6 +1,5 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 
-minipro-zig is licensed under GPL-3.0-or-later.
+@xgecu/webusb is licensed under GPL-3.0-or-later.
 
-This project is a Zig port derived from the upstream GPL minipro codebase, so
-source files keep GPL-3.0-or-later SPDX identifiers unless noted otherwise.
+Source files keep GPL-3.0-or-later SPDX identifiers unless noted otherwise.
