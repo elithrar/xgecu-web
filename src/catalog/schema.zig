@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 const model = @import("../core/model.zig");
 const t48 = @import("../programmer/t48.zig");

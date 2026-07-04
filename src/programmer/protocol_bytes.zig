@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //! Shared byte-level constants for the T48/T56 USB protocols.
 //!
 //! These devices intentionally use the same command byte assignments for the

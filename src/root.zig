@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 pub const core = struct {
     pub const algorithm_name = @import("core/algorithm_name.zig");
