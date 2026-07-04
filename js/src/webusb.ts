@@ -127,6 +127,11 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   async writeROM(options: WriteROMOptions): Promise<void> {
     if (options.data.byteLength === 0) throw new XgecuWebUSBError("writeROM data must not be empty.", "InputTooLarge");
     return withProgrammerOperation(options.programmer.device, async () => {
+      const device = this.wasm.resolveDevice(options.device, options.programmerKind ?? "auto");
+      if (!device) throw new XgecuWebUSBError("Device not found or unsupported by requested programmer.", "DeviceNotFound");
+      const size = memorySize(device, options.memory ?? "code");
+      if (size === 0) throw new XgecuWebUSBError("Selected memory region is empty.", "EmptyMemoryRegion");
+      if (options.data.byteLength > size) throw new XgecuWebUSBError("writeROM data is larger than the selected memory region.", "InputTooLarge");
       await ensureReady(options.programmer.device);
       const handle = this.wasm.startWriteROM({
         programmer: options.programmerKind ?? "auto",
@@ -134,6 +139,8 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
         memory: options.memory ?? "code",
         data: options.data,
         erase: options.erase ?? true,
+        eraseNumFuses: clampByte(options.eraseNumFuses ?? 0),
+        erasePld: clampByte(options.erasePld ?? 0),
         verify: options.verify ?? true,
         skipIdCheck: options.skipIdCheck ?? false,
         continueOnIdMismatch: options.continueOnIdMismatch ?? false,
@@ -211,6 +218,23 @@ function deviceInfo(device: USBDeviceLike): ProgrammerInfo {
     productId: device.productId,
     opened: device.opened
   };
+}
+
+function memorySize(device: DeviceDetail, memory: NonNullable<WriteROMOptions["memory"]>): number {
+  switch (memory) {
+    case "code":
+      return device.codeMemorySize;
+    case "data":
+      return device.dataMemorySize;
+    case "user":
+      return device.userMemorySize;
+  }
+}
+
+function clampByte(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (value >= 0xff) return 0xff;
+  return Math.trunc(value);
 }
 
 async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Promise<T>): Promise<T> {

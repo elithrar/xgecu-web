@@ -206,6 +206,8 @@ await api.writeROM({
   memory: "code",
   programmerKind: "t48",
   erase: true,
+  eraseNumFuses: 0,
+  erasePld: 0,
   verify: true,
   skipIdCheck: false,
   continueOnIdMismatch: false,
@@ -218,6 +220,7 @@ await api.writeROM({
 
 `erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
+`eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
 Protected flash workflows can opt into `unprotectBefore` and `protectAfter` when the chip and catalog flags require it.
 Only one ROM operation may be active per programmer connection; overlapping calls throw `OperationInProgress`.
 

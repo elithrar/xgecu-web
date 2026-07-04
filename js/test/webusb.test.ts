@@ -172,6 +172,8 @@ describe("BrowserXgecuWebUSB", () => {
       memory: "code",
       data,
       erase: true,
+      eraseNumFuses: 0,
+      erasePld: 0,
       verify: true,
       skipIdCheck: false,
       continueOnIdMismatch: false,
@@ -179,6 +181,17 @@ describe("BrowserXgecuWebUSB", () => {
       protectAfter: false
     });
     expect(runOperation).toHaveBeenCalledOnce();
+  });
+
+  it("rejects oversized writeROM data before starting Wasm operation", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    const startWriteROM = vi.spyOn(wasm, "startWriteROM");
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.writeROM({ programmer, device: "AT28C64B@DIP28", data: new Uint8Array(8193) })).rejects.toMatchObject({ code: "InputTooLarge" });
+    expect(startWriteROM).not.toHaveBeenCalled();
   });
 
   it("rejects empty writeROM data before starting Wasm operation", async () => {

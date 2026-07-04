@@ -13,6 +13,7 @@ const packet = protocol_bytes.packet;
 
 pub const Error = transport.Error || error{
     Overcurrent,
+    ProgrammerStatusError,
 };
 
 pub const Device = t48.Device;
@@ -38,6 +39,7 @@ pub fn beginTransaction(trans: transport.Transport, device: Device, bitstream: [
     try trans.send(&msg);
     const status = try requestStatus(trans);
     if (status.overcurrent != 0) return Error.Overcurrent;
+    if (status.error_code != 0) return Error.ProgrammerStatusError;
 }
 
 pub fn endTransaction(trans: transport.Transport) Error!void {
@@ -126,6 +128,8 @@ pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
     try trans.send(&msg);
     var response = [_]u8{0} ** packet.erase_response_len;
     _ = try trans.recv(&response);
+    if (response[12] != 0) return Error.Overcurrent;
+    if (response[0] != 0) return Error.ProgrammerStatusError;
 }
 
 pub fn protectOff(trans: transport.Transport) Error!void {

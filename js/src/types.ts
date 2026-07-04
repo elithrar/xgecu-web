@@ -58,6 +58,8 @@ export interface WriteROMOptions {
   memory?: MemoryKind;
   programmerKind?: ProgrammerKind;
   erase?: boolean;
+  eraseNumFuses?: number;
+  erasePld?: number;
   verify?: boolean;
   skipIdCheck?: boolean;
   continueOnIdMismatch?: boolean;

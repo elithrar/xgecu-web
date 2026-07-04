@@ -81,6 +81,8 @@ const Operation = struct {
     awaiting: bool = false,
     skip_id_check: bool = false,
     erase: bool = true,
+    erase_num_fuses: u8 = 0,
+    erase_pld: u8 = 0,
     verify: bool = false,
     data: []u8 = &.{},
     verify_data: []u8 = &.{},
@@ -205,7 +207,7 @@ export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: 
     return @intCast(@intFromPtr(op));
 }
 
-export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, verify: u32, skip_id_check: u32, continue_on_id_mismatch: u32, unprotect_before: u32, protect_after: u32) u32 {
+export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, erase_num_fuses: u32, erase_pld: u32, verify: u32, skip_id_check: u32, continue_on_id_mismatch: u32, unprotect_before: u32, protect_after: u32) u32 {
     if (data_len == 0) return failStart("input data is empty");
     const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
     const memory = memoryFromAbi(memory_value) catch return failStart("invalid memory kind");
@@ -227,6 +229,8 @@ export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len:
         .memory = memory,
         .data = data,
         .erase = erase != 0,
+        .erase_num_fuses = @intCast(@min(erase_num_fuses, std.math.maxInt(u8))),
+        .erase_pld = @intCast(@min(erase_pld, std.math.maxInt(u8))),
         .verify = verify != 0,
         .skip_id_check = skip_id_check != 0,
         .continue_on_id_mismatch = continue_on_id_mismatch != 0,
@@ -386,6 +390,8 @@ fn nextTransfer(op: *Operation) !Transfer {
         .send_erase => {
             @memset(op.command[0..packet.erase_len], 0);
             op.command[0] = command.erase;
+            op.command[2] = op.erase_num_fuses;
+            op.command[4] = op.erase_pld;
             return outTransfer(op, endpoints.command, op.command[0..packet.erase_len]);
         },
         .recv_erase => return inTransfer(endpoints.command, packet.erase_response_len),
@@ -858,7 +864,7 @@ test "JSON string writer escapes generated catalog names" {
 test "Wasm start write rejects empty input before operation allocation" {
     defer resetAbiGlobalsForTest();
 
-    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0);
+    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0);
     try std.testing.expectEqual(@as(u32, 0), rc);
     try std.testing.expectEqualStrings("input data is empty", last_error);
 }

@@ -20,6 +20,8 @@ export interface WasmExports {
     dataPtr: number,
     dataLen: number,
     erase: number,
+    eraseNumFuses: number,
+    erasePld: number,
     verify: number,
     skipIdCheck: number,
     continueOnIdMismatch: number,
@@ -109,6 +111,8 @@ export class WasmBridge {
     memory: MemoryKind;
     data: Uint8Array;
     erase: boolean;
+    eraseNumFuses: number;
+    erasePld: number;
     verify: boolean;
     skipIdCheck: boolean;
     continueOnIdMismatch: boolean;
@@ -126,6 +130,8 @@ export class WasmBridge {
           dataPtr,
           options.data.byteLength,
           options.erase ? 1 : 0,
+          options.eraseNumFuses,
+          options.erasePld,
           options.verify ? 1 : 0,
           options.skipIdCheck ? 1 : 0,
           options.continueOnIdMismatch ? 1 : 0,
@@ -163,7 +169,7 @@ export class WasmBridge {
           }
           const rc = this.exports.mp_operation_complete(handle, 0, 0, 0);
           if (rc !== 0) {
-            await this.drainCleanup(handle, performTransfer);
+            await this.drainCleanupBestEffort(handle, performTransfer);
             throw this.operationError(handle);
           }
           options.onProgress?.(this.operationProgress(handle));
@@ -185,7 +191,7 @@ export class WasmBridge {
             rc = this.exports.mp_operation_complete(handle, 0, ptr, bytes.byteLength);
           });
           if (rc !== 0) {
-            await this.drainCleanup(handle, performTransfer);
+            await this.drainCleanupBestEffort(handle, performTransfer);
             throw this.operationError(handle);
           }
           options.onProgress?.(this.operationProgress(handle));
