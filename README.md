@@ -31,9 +31,10 @@ pnpm demo:typecheck   # typecheck the React ROM demo app
 pnpm ci               # run the local CI command set
 ```
 
-The Zig library and Wasm ABI are built with:
+The Zig library and Wasm ABI can also be built directly with Zig after the generated catalog is up to date:
 
 ```sh
+pnpm run generate:catalog
 zig build test
 zig build wasm -Doptimize=ReleaseSmall
 ```
@@ -60,16 +61,12 @@ const bytes = await api.readROM({
   memory: "code"
 });
 
-await api.writeROM({
-  programmer,
-  device: "AT28C64B@DIP28",
-  data: bytes,
-  erase: true,
-  verify: true
-});
+console.log(`Read ${bytes.byteLength} bytes`);
 ```
 
 See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, read a ROM, download the readback, and write a selected binary image with erase + verify.
+
+For a complete browser example that backs up and writes a 28-pin EEPROM, see `docs/examples.md`.
 
 ## Zig API
 
@@ -83,7 +80,6 @@ defer allocator.free(summaries);
 
 const bytes = try xgecu.rom.readROM(allocator, transport, "AT28C64B@DIP28", .{
     .programmer = .t48,
-    .skip_id_check = true,
 });
 defer allocator.free(bytes);
 ```

@@ -1,6 +1,6 @@
 # WebUSB behavior
 
-The JavaScript layer owns WebUSB permissions, opening, configuration selection, interface claiming, and async transfers. The Wasm module never blocks on JavaScript promises; instead it exposes an operation state machine:
+The JavaScript layer owns WebUSB permissions, opening, configuration selection, interface claiming, interface release, and async transfers. The Wasm module never blocks on JavaScript promises; instead it exposes an operation state machine:
 
 1. JS starts an operation such as `readROM`.
 2. JS asks Wasm for the next transfer.
@@ -22,3 +22,26 @@ T56 block reads and writes use endpoint 1 according to the current protocol impl
 T56 transactions also require an algorithm bitstream. The Wasm ABI emits the T56 bitstream header transfer followed by the bitstream payload transfer before the normal begin-transaction packet. Catalog source records without a non-empty `t56AlgorithmHex` or `t56AlgorithmBase64` value are not advertised as T56-compatible.
 
 Supported programmer hardware is limited to T48/T56. The browser chooser filters by XGecu VID/PID, then the Wasm session probe rejects unsupported programmer models.
+
+Example transfer loop shape:
+
+```ts
+import { WasmBridge, createProgrammer, performWebUSBTransfer } from "@xgecu/webusb";
+
+const api = await createProgrammer();
+const programmer = await api.requestProgrammer();
+const wasm = await WasmBridge.load();
+
+const handle = wasm.startReadROM({
+  programmer: "auto",
+  device: "AT28C64B@DIP28",
+  memory: "code",
+  skipIdCheck: false
+});
+
+const bytes = await wasm.runOperation(handle, (transfer) => {
+  return performWebUSBTransfer(programmer.device, transfer);
+});
+```
+
+Most browser apps should call `api.readROM()` and `api.writeROM()` instead of using this lower-level loop directly.

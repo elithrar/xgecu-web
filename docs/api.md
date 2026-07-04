@@ -14,17 +14,36 @@ const api = await createProgrammer({
 });
 ```
 
+Omit `wasmUrl` when the bundler can resolve the package's default Wasm asset.
+
 ## `deviceList(query?)`
 
 Returns target ROM/device metadata from the generated embedded T48/T56 catalog. The source metadata lives in `data/catalog.json`; `pnpm run generate:catalog` writes `src/catalog/generated.zig`.
 
 ```ts
-api.deviceList({ search: "W25", programmer: "t56", limit: 20 });
+const devices = api.deviceList({ search: "AT28", programmer: "t48", limit: 20 });
+```
+
+T56 results are listed only for catalog records that include a generated T56 algorithm payload.
+
+```ts
+const t56Devices = api.deviceList({ programmer: "t56", limit: 20 });
 ```
 
 ## `requestProgrammer()`
 
 Shows the WebUSB chooser for supported XGecu USB IDs, opens the selected device, and claims interface 0.
+
+Close the returned connection when your app is done with the programmer:
+
+```ts
+const programmer = await api.requestProgrammer();
+try {
+  // readROM or writeROM calls
+} finally {
+  await programmer.close();
+}
+```
 
 ## `readROM(options)`
 
@@ -37,6 +56,8 @@ const data = await api.readROM({
   memory: "code"
 });
 ```
+
+The returned `Uint8Array` length is the catalogued memory size for the selected memory region.
 
 ## `writeROM(options)`
 
@@ -54,3 +75,5 @@ await api.writeROM({
 
 `erase` and `verify` default to `true`.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
+
+For a complete backup-then-write browser flow, including image length checks, see `docs/examples.md`.
