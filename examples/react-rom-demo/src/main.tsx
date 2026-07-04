@@ -34,15 +34,12 @@ function App() {
     };
   }, [programmer]);
 
-  const devices: DeviceSummary[] = useMemo(() => {
-    const result = api?.deviceList({ search: query, limit: 25 });
-    if (!result) return [];
-    if (result.status === "error") {
-      setStatus(result.error.message);
-      return [];
-    }
-    return result.value;
-  }, [api, query]);
+  const deviceListResult = useMemo(() => api?.deviceList({ search: query, limit: 25 }), [api, query]);
+  const devices: DeviceSummary[] = deviceListResult?.status === "ok" ? deviceListResult.value : [];
+
+  useEffect(() => {
+    if (deviceListResult?.status === "error") setStatus(deviceListResult.error.message);
+  }, [deviceListResult]);
 
   async function connect() {
     if (!api) return;
