@@ -255,8 +255,8 @@ test "readROM reports chip ID mismatch before reading payload" {
     response[4] = 1;
     response[5] = 2;
     response[6] = 7;
-    response[12] = 0;
     @memcpy(response[8..24], "2026-07-04......");
+    response[12] = 0;
     @memcpy(response[24..32], "T48CODE!");
     @memcpy(response[32..54], "SERIAL-T48-00000000000");
     var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
