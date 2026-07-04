@@ -4,7 +4,9 @@ const std = @import("std");
 const catalog = @import("../catalog/catalog.zig");
 const model = @import("../core/model.zig");
 const session = @import("../programmer/session.zig");
+const protocol_bytes = @import("../programmer/protocol_bytes.zig");
 const protocol = @import("../programmer/protocol.zig");
+const t48 = @import("../programmer/t48.zig");
 const transport_mod = @import("../programmer/transport.zig");
 
 pub const Error = catalog.Error || protocol.Error || error{
@@ -62,7 +64,7 @@ pub fn readROM(
     });
 
     var offset: usize = 0;
-    const chunk_size = @max(@as(usize, descriptor.read_buffer_size), 1);
+    const chunk_size = readChunkSize(info.programmer, descriptor);
     while (offset < out.len) {
         const len = @min(chunk_size, out.len - offset);
         try protocol.readBlock(info.programmer, trans, options.memory, @intCast(offset), out[offset .. offset + len]);
@@ -126,7 +128,7 @@ pub fn writeROM(
         var actual = try allocator.alloc(u8, data.len);
         defer allocator.free(actual);
         offset = 0;
-        const read_chunk = @max(@as(usize, descriptor.read_buffer_size), 1);
+        const read_chunk = readChunkSize(info.programmer, descriptor);
         while (offset < actual.len) {
             const len = @min(read_chunk, actual.len - offset);
             try protocol.readBlock(info.programmer, trans, options.memory, @intCast(offset), actual[offset .. offset + len]);
@@ -163,6 +165,14 @@ fn memorySize(device: catalog.DeviceRecord, memory: model.MemoryKind) usize {
         .data => device.data_memory_size,
         .user => device.data_memory2_size,
     };
+}
+
+fn readChunkSize(programmer: model.Programmer, descriptor: t48.Device) usize {
+    const descriptor_chunk = @max(@as(usize, descriptor.read_buffer_size), 1);
+    return if (programmer == .t56)
+        @min(descriptor_chunk, protocol_bytes.packet.t56_read_payload_max)
+    else
+        descriptor_chunk;
 }
 
 fn protectOff(programmer: model.Programmer, trans: transport_mod.Transport) Error!void {
@@ -216,6 +226,13 @@ test "writeROM rejects empty data before touching transport" {
     try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
 }
 
+test "T56 read chunk size is capped to protocol payload window" {
+    var descriptor = catalog.devices[0].descriptor(.t56);
+    descriptor.read_buffer_size = 512;
+    try std.testing.expectEqual(@as(usize, protocol_bytes.packet.t56_read_payload_max), readChunkSize(.t56, descriptor));
+    try std.testing.expectEqual(@as(usize, 512), readChunkSize(.t48, descriptor));
+}
+
 test "writeROM uses T48 erase write status and verify sequence" {
     var response = [_]u8{0} ** 80;
     response[4] = 1;
@@ -232,9 +249,9 @@ test "writeROM uses T48 erase write status and verify sequence" {
 
     try writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &verify_payload, .{ .programmer = .t48, .skip_id_check = true });
 
-    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, 0x0e) != null);
-    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, 0x0c) != null);
-    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, 0x0d) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.erase) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
     try std.testing.expectEqualSlices(u8, &verify_payload, fake.payload_sent.items);
 }
 

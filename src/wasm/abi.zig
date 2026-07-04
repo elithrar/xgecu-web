@@ -5,8 +5,13 @@ const builtin = @import("builtin");
 const catalog = @import("../catalog/catalog.zig");
 const endian = @import("../core/endian.zig");
 const model = @import("../core/model.zig");
+const protocol_bytes = @import("../programmer/protocol_bytes.zig");
 const session = @import("../programmer/session.zig");
 const t48 = @import("../programmer/t48.zig");
+
+const command = protocol_bytes.command;
+const endpoints = protocol_bytes.endpoint;
+const packet = protocol_bytes.packet;
 
 const TransferKind = enum(u32) {
     done = 0,
@@ -14,8 +19,6 @@ const TransferKind = enum(u32) {
     in = 2,
     failed = 3,
 };
-
-const t56_read_payload_max = 64;
 
 const OpKind = enum {
     read,
@@ -75,7 +78,7 @@ const Operation = struct {
     verify_data: []u8 = &.{},
     payload: []u8 = &.{},
     offset: usize = 0,
-    command: [512]u8 = [_]u8{0} ** 512,
+    command: [packet.begin_len]u8 = [_]u8{0} ** packet.begin_len,
     transfer: Transfer = .{},
     error_code: u32 = 0,
 
@@ -91,6 +94,7 @@ var last_result: []u8 = &.{};
 var last_error: []u8 = &.{};
 
 fn allocator() std.mem.Allocator {
+    if (comptime builtin.is_test) return std.testing.allocator;
     if (builtin.target.cpu.arch == .wasm32) return std.heap.wasm_allocator;
     return std.heap.page_allocator;
 }
@@ -246,57 +250,57 @@ export fn mp_operation_result(handle: u32) u32 {
 fn nextTransfer(op: *Operation) !Transfer {
     switch (op.state) {
         .send_info => {
-            @memset(op.command[0..5], 0);
-            return outTransfer(op, 1, op.command[0..5]);
+            @memset(op.command[0..packet.system_info_request_len], 0);
+            return outTransfer(op, endpoints.command, op.command[0..packet.system_info_request_len]);
         },
-        .recv_info => return inTransfer(1, 80),
+        .recv_info => return inTransfer(endpoints.command, packet.system_info_response_len),
         .send_t56_bitstream_header, .send_second_t56_bitstream_header => {
-            @memset(op.command[0..8], 0);
-            op.command[0] = 0x26;
+            @memset(op.command[0..packet.bitstream_header_len], 0);
+            op.command[0] = command.write_bitstream;
             const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
             if (bitstream.len == 0) return error.AlgorithmUnavailable;
             endian.storeInt(op.command[4..8], bitstream.len, .little);
-            return outTransfer(op, 1, op.command[0..8]);
+            return outTransfer(op, endpoints.command, op.command[0..packet.bitstream_header_len]);
         },
         .send_t56_bitstream_payload, .send_second_t56_bitstream_payload => {
             const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
             if (bitstream.len == 0) return error.AlgorithmUnavailable;
-            return outTransfer(op, 1, bitstream);
+            return outTransfer(op, endpoints.command, bitstream);
         },
         .send_begin, .send_second_begin => {
             writeBeginPacket(op);
-            return outTransfer(op, 1, op.command[0..64]);
+            return outTransfer(op, endpoints.command, op.command[0..packet.begin_len]);
         },
         .send_begin_status, .send_second_status, .send_write_status => {
-            @memset(op.command[0..8], 0);
-            op.command[0] = 0x39;
-            return outTransfer(op, 1, op.command[0..8]);
+            @memset(op.command[0..packet.short_command_len], 0);
+            op.command[0] = command.request_status;
+            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .recv_begin_status, .recv_second_status, .recv_write_status => return inTransfer(1, 32),
+        .recv_begin_status, .recv_second_status, .recv_write_status => return inTransfer(endpoints.command, packet.status_len),
         .send_chip_id => {
-            @memset(op.command[0..8], 0);
-            op.command[0] = 0x05;
-            return outTransfer(op, 1, op.command[0..8]);
+            @memset(op.command[0..packet.short_command_len], 0);
+            op.command[0] = command.read_id;
+            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .recv_chip_id => return inTransfer(1, 32),
+        .recv_chip_id => return inTransfer(endpoints.command, packet.chip_id_len),
         .send_erase => {
-            @memset(op.command[0..15], 0);
-            op.command[0] = 0x0e;
-            return outTransfer(op, 1, op.command[0..15]);
+            @memset(op.command[0..packet.erase_len], 0);
+            op.command[0] = command.erase;
+            return outTransfer(op, endpoints.command, op.command[0..packet.erase_len]);
         },
-        .recv_erase => return inTransfer(1, 64),
+        .recv_erase => return inTransfer(endpoints.command, packet.erase_response_len),
         .send_end_after_erase => {
-            @memset(op.command[0..8], 0);
-            op.command[0] = 0x04;
-            return outTransfer(op, 1, op.command[0..8]);
+            @memset(op.command[0..packet.short_command_len], 0);
+            op.command[0] = command.end_transaction;
+            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
         .send_write_cmd => {
             const len = currentWriteLen(op);
-            @memset(op.command[0..8], 0);
+            @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = writeCommand(op.memory);
             endian.storeInt(op.command[2..4], len, .little);
             endian.storeInt(op.command[4..8], op.offset, .little);
-            return outTransfer(op, 1, op.command[0..8]);
+            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
         .send_write_payload => {
             const len = currentWriteLen(op);
@@ -305,22 +309,22 @@ fn nextTransfer(op: *Operation) !Transfer {
                 if (transfer_len > op.payload.len) return error.PayloadBufferTooSmall;
                 @memset(op.payload[0..transfer_len], 0);
                 @memcpy(op.payload[0..len], op.data[op.offset .. op.offset + len]);
-                return outTransfer(op, 1, op.payload[0..transfer_len]);
+                return outTransfer(op, endpoints.command, op.payload[0..transfer_len]);
             }
-            return outTransfer(op, 2, op.data[op.offset .. op.offset + len]);
+            return outTransfer(op, endpoints.payload, op.data[op.offset .. op.offset + len]);
         },
         .send_read_cmd, .verify_send_read_cmd => {
             const len = currentReadLen(op);
-            @memset(op.command[0..8], 0);
+            @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = readCommand(op.memory);
             endian.storeInt(op.command[2..4], len, .little);
             endian.storeInt(op.command[4..8], op.offset, .little);
-            return outTransfer(op, 1, op.command[0..8]);
+            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
         .recv_read_payload, .verify_recv_read_payload => {
             const len = currentReadLen(op);
-            if (op.programmer == .t56) return inTransfer(1, @intCast(len + 16));
-            return inTransfer(2, @intCast(len));
+            if (op.programmer == .t56) return inTransfer(endpoints.command, @intCast(len + packet.t56_read_status_slop));
+            return inTransfer(endpoints.payload, @intCast(len));
         },
         .done => return .{ .kind = .done },
         .failed => return .{ .kind = .failed },
@@ -429,57 +433,29 @@ fn inTransfer(endpoint: u8, len: u32) Transfer {
 }
 
 fn writeBeginPacket(op: *Operation) void {
-    const device = op.descriptor;
-    @memset(op.command[0..64], 0);
-    op.command[0] = 0x03;
-    op.command[1] = device.protocol_id;
-    op.command[2] = @intCast(device.variant & 0xff);
-    op.command[3] = device.icsp;
-    endian.storeInt(op.command[4..6], device.voltages_raw, .little);
-    op.command[6] = @intCast(device.chip_info & 0xff);
-    op.command[7] = @intCast(device.pin_map & 0xff);
-    endian.storeInt(op.command[8..10], device.data_memory_size, .little);
-    endian.storeInt(op.command[10..12], device.page_size, .little);
-    endian.storeInt(op.command[12..14], device.pulse_delay, .little);
-    endian.storeInt(op.command[14..16], device.data_memory2_size, .little);
-    endian.storeInt(op.command[16..20], device.code_memory_size, .little);
-    op.command[20] = @intCast((device.voltages_raw >> 16) & 0xff);
-    if (device.voltages_raw & 0xf0 == 0xf0) {
-        op.command[22] = @intCast(device.voltages_raw & 0xff);
-    } else {
-        op.command[21] = @intCast(device.voltages_raw & 0x0f);
-        op.command[22] = @intCast(device.voltages_raw & 0xf0);
-    }
-    if (device.voltages_raw & 0x80000000 != 0) op.command[22] = @intCast((device.voltages_raw >> 16) & 0x0f);
-    if (device.can_adjust_clock) {
-        if (op.programmer == .t48) op.command[24] = 1;
-        op.command[28] = device.spi_clock;
-    }
-    endian.storeInt(op.command[40..44], device.package_details_raw, .little);
-    endian.storeInt(op.command[44..46], device.read_buffer_size, .little);
-    endian.storeInt(op.command[56..60], device.flags_raw, .little);
+    t48.writeBeginPacket(&op.command, op.programmer, op.descriptor);
 }
 
 fn readCommand(memory: model.MemoryKind) u8 {
     return switch (memory) {
-        .code => 0x0d,
-        .data => 0x10,
-        .user => 0x0b,
+        .code => command.read_code,
+        .data => command.read_data,
+        .user => command.read_user_data,
     };
 }
 
 fn writeCommand(memory: model.MemoryKind) u8 {
     return switch (memory) {
-        .code => 0x0c,
-        .data => 0x11,
-        .user => 0x0a,
+        .code => command.write_code,
+        .data => command.write_data,
+        .user => command.write_user_data,
     };
 }
 
 fn currentReadLen(op: *Operation) usize {
     const total = if (op.state == .verify_send_read_cmd or op.state == .verify_recv_read_payload) op.verify_data.len else op.data.len;
     const descriptor_chunk = @max(@as(usize, op.descriptor.read_buffer_size), 1);
-    const chunk = if (op.programmer == .t56) @min(descriptor_chunk, t56_read_payload_max) else descriptor_chunk;
+    const chunk = if (op.programmer == .t56) @min(descriptor_chunk, packet.t56_read_payload_max) else descriptor_chunk;
     return @min(chunk, total - op.offset);
 }
 
@@ -569,15 +545,35 @@ fn writeJsonString(writer: anytype, text: []const u8) !void {
 }
 
 fn setResult(bytes: []u8) u32 {
-    if (last_result.len != 0) allocator().free(last_result);
+    clearLastResult();
+    clearLastError();
     last_result = bytes;
     return 0;
 }
 
 fn setError(message: []const u8) u32 {
-    if (last_error.len != 0) allocator().free(last_error);
+    clearLastError();
+    clearLastResult();
     last_error = allocator().dupe(u8, message) catch &.{};
     return 1;
+}
+
+fn clearLastResult() void {
+    if (last_result.len == 0) return;
+    allocator().free(last_result);
+    last_result = &.{};
+}
+
+fn clearLastError() void {
+    if (last_error.len == 0) return;
+    allocator().free(last_error);
+    last_error = &.{};
+}
+
+fn resetAbiGlobalsForTest() void {
+    if (!comptime builtin.is_test) return;
+    clearLastResult();
+    clearLastError();
 }
 
 fn errorCode(err: anyerror) u32 {
@@ -620,9 +616,28 @@ test "JSON string writer escapes generated catalog names" {
 }
 
 test "Wasm start write rejects empty input before operation allocation" {
+    defer resetAbiGlobalsForTest();
+
     const rc = mp_start_write_rom(1, 0, 0, 0, 0, 0, 1, 1, 0);
     try std.testing.expectEqual(@as(u32, 0), rc);
     try std.testing.expectEqualStrings("input data is empty", last_error);
+}
+
+test "ABI result and error buffers clear each other" {
+    defer resetAbiGlobalsForTest();
+
+    const alloc = allocator();
+    try std.testing.expectEqual(@as(u32, 1), setError("first failure"));
+    try std.testing.expectEqualStrings("first failure", last_error);
+
+    const result = try alloc.dupe(u8, "ok");
+    try std.testing.expectEqual(@as(u32, 0), setResult(result));
+    try std.testing.expectEqualStrings("ok", last_result);
+    try std.testing.expectEqual(@as(usize, 0), last_error.len);
+
+    try std.testing.expectEqual(@as(u32, 1), setError("second failure"));
+    try std.testing.expectEqualStrings("second failure", last_error);
+    try std.testing.expectEqual(@as(usize, 0), last_result.len);
 }
 
 test "T48 Wasm write operation sequences erase write status and verify transfers" {
@@ -645,7 +660,7 @@ test "T48 Wasm write operation sequences erase write status and verify transfers
         if (op.verify_data.len != 0) alloc.free(op.verify_data);
     }
 
-    var info = [_]u8{0} ** 80;
+    var info = [_]u8{0} ** packet.system_info_response_len;
     info[4] = 1;
     info[5] = 2;
     info[6] = 7;
@@ -714,7 +729,7 @@ test "T56 Wasm reads are capped to native protocol payload window" {
         .data = &bytes,
     };
     op.descriptor.read_buffer_size = 512;
-    try std.testing.expectEqual(@as(usize, t56_read_payload_max), currentReadLen(&op));
+    try std.testing.expectEqual(@as(usize, packet.t56_read_payload_max), currentReadLen(&op));
 }
 
 test "T56 Wasm write payload uses owned payload buffer" {

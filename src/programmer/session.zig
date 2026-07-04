@@ -3,7 +3,10 @@
 const std = @import("std");
 const endian = @import("../core/endian.zig");
 const model = @import("../core/model.zig");
+const protocol_bytes = @import("protocol_bytes.zig");
 const transport = @import("transport.zig");
+
+const packet = protocol_bytes.packet;
 
 const mp_t56 = 6;
 const mp_t48 = 7;
@@ -44,16 +47,16 @@ pub const Session = struct {
 };
 
 pub fn getSystemInfo(trans: transport.Transport) !SystemInfo {
-    var request = [_]u8{0} ** 5;
+    var request = [_]u8{0} ** packet.system_info_request_len;
     try trans.send(&request);
 
-    var msg = [_]u8{0} ** 80;
+    var msg = [_]u8{0} ** packet.system_info_response_len;
     _ = try trans.recv(&msg);
     return parseSystemInfo(&msg) orelse error.UnsupportedProgrammer;
 }
 
 pub fn parseSystemInfo(msg: []const u8) ?SystemInfo {
-    if (msg.len < 80) return null;
+    if (msg.len < packet.system_info_response_len) return null;
     const version = msg[6];
     var info = SystemInfo{
         .programmer = .auto,
@@ -93,6 +96,7 @@ pub fn parseSystemInfo(msg: []const u8) ?SystemInfo {
 
 fn firmwareString(hw: u8, major: u8, minor: u8) [8]u8 {
     var out = [_]u8{0} ** 8;
+    // The format is fixed-width ("00.0.00"), so the 8-byte buffer is sufficient.
     const text = std.fmt.bufPrint(&out, "{d:0>2}.{d}.{d:0>2}", .{ hw, major, minor }) catch unreachable;
     @memset(out[text.len..], 0);
     return out;
