@@ -1,93 +1,89 @@
-# minipro-zig
+# @xgecu/webusb
 
-`minipro-zig` is a Zig port of the upstream GPL `minipro` CLI for XGecu/TL866-compatible programmers. It keeps legacy command aliases where practical while moving chip databases into SQLite for faster, queryable access.
+Browser WebUSB APIs for programming ROM devices with XGecu T48/T56 programmers.
 
-The port is still in progress. Read-only database commands, programmer detection/info, file formats, fake-transport protocol tests, and several opt-in chip operations are implemented. Destructive hardware operations require explicit `--execute` plus confirmation gates where applicable.
+This package is intentionally scoped to T48 and T56 hardware. Legacy TL866, TL866II+, T76, CLI, libusb, and SQLite runtime support have been removed from the build.
 
-## Build
+## Install/build from source
 
 ```sh
-zig build
+pnpm install
+pnpm build
+pnpm test
+```
+
+The Zig library and Wasm ABI are built with:
+
+```sh
 zig build test
+zig build wasm -Doptimize=ReleaseSmall
 ```
 
-The build links system `sqlite3` and `libusb-1.0`.
+`pnpm build` runs the Wasm build first, then compiles the TypeScript browser package with Vite.
 
-## Import Databases
+## Browser usage
 
-Import upstream XML into a SQLite database:
+WebUSB requires a Chromium-based browser and a secure context: HTTPS or `localhost`.
 
-```sh
-./zig-out/bin/minipro-zig db import \
-  --infoic ~/repos/minipro/infoic.xml \
-  --logicic ~/repos/minipro/logicic.xml \
-  --out devices.sqlite
+```ts
+import { createProgrammer } from "@xgecu/webusb";
+
+const api = await createProgrammer();
+
+const devices = api.deviceList({ search: "AT28", programmer: "t48" });
+console.log(devices);
+
+const programmer = await api.requestProgrammer();
+
+const bytes = await api.readROM({
+  programmer,
+  device: "AT28C64B@DIP28",
+  memory: "code",
+  skipIdCheck: true
+});
+
+await api.writeROM({
+  programmer,
+  device: "AT28C64B@DIP28",
+  data: bytes,
+  erase: true,
+  verify: true,
+  skipIdCheck: true
+});
 ```
 
-If you have a generated `algorithm.xml`, include it for T56/T76 algorithm-aware operations:
+See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, read a ROM, download the readback, and write a selected binary image with erase + verify.
 
-```sh
-./zig-out/bin/minipro-zig db import \
-  --infoic ~/repos/minipro/infoic.xml \
-  --logicic ~/repos/minipro/logicic.xml \
-  --algorithms algorithm.xml \
-  --out devices.sqlite
+## Zig API
+
+Other Zig programs can import the package module and provide their own transport:
+
+```zig
+const xgecu = @import("xgecu-webusb");
+
+const summaries = try xgecu.rom.deviceList(allocator, "AT28", .t48, 25);
+defer allocator.free(summaries);
+
+const bytes = try xgecu.rom.readROM(allocator, transport, "AT28C64B@DIP28", .{
+    .programmer = .t48,
+    .skip_id_check = true,
+});
+defer allocator.free(bytes);
 ```
 
-## Examples
+## Architecture
 
-```sh
-./zig-out/bin/minipro-zig --db devices.sqlite -Q
-./zig-out/bin/minipro-zig --db devices.sqlite -l -q t48
-./zig-out/bin/minipro-zig --db devices.sqlite -L AT28 -q tl866ii
-./zig-out/bin/minipro-zig --db devices.sqlite -d 'M27C64A@DIP28' -q t48
-./zig-out/bin/minipro-zig programmer info
-```
+- `src/programmer/t48.zig` and `src/programmer/t56.zig` contain packet-level protocol code.
+- `src/programmer/transport.zig` defines the host-neutral transport interface.
+- `src/ops/rom.zig` exposes high-level read/write ROM operations for Zig callers.
+- `src/wasm/abi.zig` exposes a browser-oriented ABI where JavaScript drives one WebUSB transfer at a time.
+- `js/src/webusb.ts` maps ABI transfer requests to `USBDevice.transferOut()` and `USBDevice.transferIn()`.
+- `src/catalog/catalog.zig` is a static browser catalog. It is shaped for generated T48/T56-only device metadata.
 
-Chip operations default to dry-run. Add `--execute` only when hardware is connected and the selected device/package is correct.
+## Hardware safety
 
-```sh
-./zig-out/bin/minipro-zig --db devices.sqlite chip read-id --device 'M27C64A@DIP28' --programmer t48 --execute
-./zig-out/bin/minipro-zig --db devices.sqlite chip read --device 'M27C64A@DIP28' --programmer t48 --format bin --out readback.bin --execute
-```
-
-Destructive operations such as erase, write, protect, and unprotect require an exact confirmation:
-
-```sh
-./zig-out/bin/minipro-zig --db devices.sqlite chip erase --device 'AT28C64B' --programmer t48 --execute --confirm-destructive AT28C64B
-```
-
-## Oracle Comparisons
-
-Build the upstream C oracle:
-
-```sh
-sh tools/build_oracle.sh
-```
-
-Compare C and Zig output with separate fixed prefixes:
-
-```sh
-./zig-out/bin/compare_cli \
-  zig-cache/oracle/minipro-src/minipro \
-  ./zig-out/bin/minipro-zig \
-  --c-prefix --infoic ~/repos/minipro/infoic.xml --logicic ~/repos/minipro/logicic.xml \
-  --zig-prefix --db devices.sqlite \
-  -- -d '27C64@DIP28' -q tl866a
-```
-
-## Install Smoke Test
-
-```sh
-zig build --prefix /tmp/minipro-zig install
-/tmp/minipro-zig/bin/minipro-zig --version
-```
-
-Install includes the `minipro-zig` and `compare_cli` binaries, README, Linux USB access notes, udev rules, man page, shell completions, and the SQLite schema used for database imports.
-
-## Hardware Safety
-
-- Default commands do not access hardware unless they document and require `--execute`.
-- Write, erase, protect, and unprotect are destructive and require `--confirm-destructive <canonical-device>`.
-- Prefer read-only checks first: `programmer info`, `chip read-id`, `chip blank`, and `chip read`.
-- Verify writes by reading back and comparing checksums with the upstream C CLI when possible.
+- `writeROM` is destructive when `erase` is enabled.
+- Keep `verify: true` unless you have an external verification process.
+- Prefer `readROM` first to confirm WebUSB access and target selection.
+- Confirm the exact package/adapter before writing.
+- Browser permission prompts only grant access to the programmer; the library cannot detect an incorrectly inserted ROM.

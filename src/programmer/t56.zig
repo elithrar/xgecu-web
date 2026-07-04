@@ -95,7 +95,7 @@ pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u3
     endian.storeInt(msg[4..8], address, .little);
     try trans.send(msg[0..8]);
 
-    // Upstream asks libusb for a slightly larger buffer to tolerate a T56 firmware off-by-one bug.
+    // Upstream asks for a slightly larger USB buffer to tolerate a T56 firmware off-by-one bug.
     var response = [_]u8{0} ** 80;
     if (out.len > response.len - 16) return transport.Error.Io;
     _ = try trans.recv(response[0 .. out.len + 16]);

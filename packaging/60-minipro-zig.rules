@@ -1,4 +1,0 @@
-# XGecu/TL866-compatible programmers for minipro-zig.
-SUBSYSTEM=="usb", ATTR{idVendor}=="04d8", ATTR{idProduct}=="e11c", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="a466", ATTR{idProduct}=="0a53", MODE="0660", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="a466", ATTR{idProduct}=="1a86", MODE="0660", TAG+="uaccess"

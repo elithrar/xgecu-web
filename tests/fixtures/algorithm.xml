@@ -1,8 +1,0 @@
-<database type="ALGORITHMS">
-  <algorithms_T56>
-    <algorithm name="ROM28P00" bitstream="H4sI" />
-  </algorithms_T56>
-  <algorithms_T76>
-    <algorithm name="IIC24C00" bitstream="AAAA" />
-  </algorithms_T76>
-</database>

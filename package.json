@@ -1,0 +1,35 @@
+{
+  "name": "@xgecu/webusb",
+  "version": "0.1.0",
+  "description": "Browser WebUSB API for programming ROMs with XGecu T48/T56 programmers.",
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "pnpm run build:wasm && vite build && cp js/dist/xgecu_webusb.wasm dist/xgecu_webusb.wasm",
+    "build:wasm": "zig build wasm -Doptimize=ReleaseSmall && mkdir -p js/dist && cp zig-out/bin/xgecu_webusb.wasm js/dist/xgecu_webusb.wasm",
+    "test": "vitest run",
+    "test:zig": "zig build test",
+    "typecheck": "tsc --noEmit",
+    "dev": "vite --host 0.0.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vite-plugin-dts": "latest",
+    "vitest": "latest"
+  }
+}
