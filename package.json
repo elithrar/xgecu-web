@@ -6,20 +6,22 @@
   "license": "GPL-3.0-or-later",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
+    "generate:catalog": "node tools/generate-catalog.mjs",
+    "check:catalog": "node tools/generate-catalog.mjs --check",
     "build": "pnpm run build:wasm && pnpm run build:js",
-    "build:zig": "zig build check",
-    "build:wasm": "zig build wasm -Doptimize=ReleaseSmall && mkdir -p js/dist && cp zig-out/bin/xgecu_webusb.wasm js/dist/xgecu_webusb.wasm",
+    "build:zig": "pnpm run generate:catalog && zig build check",
+    "build:wasm": "pnpm run generate:catalog && zig build wasm -Doptimize=ReleaseSmall && mkdir -p js/dist && cp zig-out/bin/xgecu_webusb.wasm js/dist/xgecu_webusb.wasm",
     "build:js": "vite build && cp js/dist/xgecu_webusb.wasm dist/xgecu_webusb.wasm",
     "test": "pnpm run test:zig && pnpm run test:js",
     "test:js": "vitest run",
-    "test:zig": "zig build test",
+    "test:zig": "pnpm run generate:catalog && zig build test",
     "typecheck": "tsc --noEmit",
     "dev": "vite --host 0.0.0.0",
     "demo:dev": "pnpm --filter @xgecu/react-rom-demo dev",
     "demo:build": "pnpm --filter @xgecu/react-rom-demo build",
     "demo:typecheck": "pnpm --filter @xgecu/react-rom-demo exec tsc --noEmit -p tsconfig.json",
     "demo:preview": "pnpm --filter @xgecu/react-rom-demo preview",
-    "ci": "pnpm run build:zig && pnpm run test && pnpm run typecheck && pnpm run build && pnpm run demo:typecheck && pnpm run demo:build"
+    "ci": "pnpm run check:catalog && pnpm run build:zig && pnpm run test && pnpm run typecheck && pnpm run build && pnpm run demo:typecheck && pnpm run demo:build"
   },
   "exports": {
     ".": {

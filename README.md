@@ -19,6 +19,8 @@ pnpm build            # build Wasm + browser JS package
 pnpm build:zig        # compile Zig library tests and Wasm module
 pnpm build:wasm       # build xgecu_webusb.wasm
 pnpm build:js         # build the TypeScript browser package
+pnpm generate:catalog # regenerate src/catalog/generated.zig from data/catalog.json
+pnpm check:catalog    # verify generated catalog output is up to date
 pnpm test             # run Zig + JS tests
 pnpm test:zig         # run Zig unit tests
 pnpm test:js          # run Vitest tests
@@ -93,13 +95,24 @@ defer allocator.free(bytes);
 - `src/ops/rom.zig` exposes high-level read/write ROM operations for Zig callers.
 - `src/wasm/abi.zig` exposes a browser-oriented ABI where JavaScript drives one WebUSB transfer at a time.
 - `js/src/webusb.ts` maps ABI transfer requests to `USBDevice.transferOut()` and `USBDevice.transferIn()`.
-- `src/catalog/catalog.zig` is a static browser catalog. It is shaped for generated T48/T56-only device metadata.
+- `data/catalog.json` is the source metadata for the browser catalog.
+- `tools/generate-catalog.mjs` generates `src/catalog/generated.zig` from the catalog source.
+- `src/catalog/catalog.zig` provides lookup/filter helpers over the generated static catalog.
 
 ## Chip catalog
 
-The runtime SQLite database has been removed. Browser builds use the static catalog embedded in `src/catalog/catalog.zig`.
+The runtime SQLite database has been removed. Browser builds use a static catalog generated from `data/catalog.json` into `src/catalog/generated.zig`.
 
-Each `DeviceRecord` contains the protocol fields needed by the T48/T56 packet layer. T56 entries must also include a non-empty `t56_algorithm` payload; entries without that payload do not advertise T56 support and will be rejected if a T56 programmer is auto-detected. The current catalog is intentionally small seed data and should be replaced by generated T48/T56-only metadata before broad device support is published.
+Each `DeviceRecord` contains the protocol fields needed by the T48/T56 packet layer. T56 entries must also include a non-empty `t56AlgorithmHex` or `t56AlgorithmBase64` payload in the JSON source; entries without that payload do not advertise T56 support and will be rejected if a T56 programmer is auto-detected.
+
+To update the catalog:
+
+```sh
+pnpm run generate:catalog
+pnpm run check:catalog
+```
+
+The current JSON source is intentionally small seed data and should be expanded or replaced by imported T48/T56-only metadata before broad device support is published.
 
 ## Hardware safety
 

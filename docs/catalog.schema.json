@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/elithrar/minipro-zig/catalog.schema.json",
+  "title": "XGecu WebUSB catalog source",
+  "type": "object",
+  "required": ["devices"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "canonicalName",
+          "aliases",
+          "programmers",
+          "chipType",
+          "protocolId",
+          "variant",
+          "voltagesRaw",
+          "chipInfo",
+          "pinMap",
+          "dataMemorySize",
+          "dataMemory2Size",
+          "pageSize",
+          "pulseDelay",
+          "codeMemorySize",
+          "packageDetailsRaw",
+          "readBufferSize",
+          "writeBufferSize",
+          "flagsRaw"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "canonicalName": { "type": "string", "minLength": 1 },
+          "aliases": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "programmers": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "enum": ["t48", "t56"] }
+          },
+          "chipType": { "enum": ["memory", "mcu", "pld", "sram", "logic", "nand", "emmc", "vga"] },
+          "protocolId": { "$ref": "#/$defs/uint" },
+          "variant": { "$ref": "#/$defs/uint" },
+          "voltagesRaw": { "$ref": "#/$defs/uint" },
+          "chipInfo": { "$ref": "#/$defs/uint" },
+          "pinMap": { "$ref": "#/$defs/uint" },
+          "dataMemorySize": { "$ref": "#/$defs/uint" },
+          "dataMemory2Size": { "$ref": "#/$defs/uint" },
+          "pageSize": { "$ref": "#/$defs/uint" },
+          "pulseDelay": { "$ref": "#/$defs/uint" },
+          "codeMemorySize": { "$ref": "#/$defs/uint" },
+          "packageDetailsRaw": { "$ref": "#/$defs/uint" },
+          "readBufferSize": { "$ref": "#/$defs/uint" },
+          "writeBufferSize": { "$ref": "#/$defs/uint" },
+          "flagsRaw": { "$ref": "#/$defs/uint" },
+          "canAdjustClock": { "type": "boolean" },
+          "chipId": { "$ref": "#/$defs/uint" },
+          "chipIdBytesCount": { "$ref": "#/$defs/uint" },
+          "blankValue": { "$ref": "#/$defs/uint" },
+          "t56AlgorithmHex": { "type": "string", "pattern": "^([0-9A-Fa-f]{2}|\\s)*$" },
+          "t56AlgorithmBase64": { "type": "string" }
+        },
+        "not": { "required": ["t56AlgorithmHex", "t56AlgorithmBase64"] }
+      }
+    }
+  },
+  "$defs": {
+    "uint": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "string", "pattern": "^(0x[0-9A-Fa-f]+|[0-9]+)$" }
+      ]
+    }
+  }
+}

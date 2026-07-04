@@ -16,7 +16,7 @@ const api = await createProgrammer({
 
 ## `deviceList(query?)`
 
-Returns target ROM/device metadata from the embedded T48/T56 catalog.
+Returns target ROM/device metadata from the generated embedded T48/T56 catalog. The source metadata lives in `data/catalog.json`; `pnpm run generate:catalog` writes `src/catalog/generated.zig`.
 
 ```ts
 api.deviceList({ search: "W25", programmer: "t56", limit: 20 });
