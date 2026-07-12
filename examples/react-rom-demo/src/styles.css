@@ -1,84 +1,51 @@
 body {
-  color: #172033;
   background: #f6f8fb;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   margin: 0;
 }
 
-main {
-  max-width: 860px;
+.app-shell {
+  display: grid;
+  gap: 1rem;
+  max-width: 900px;
   margin: 0 auto;
   padding: 2rem;
 }
 
-section {
+.hero,
+.banner-stack,
+.panel-body,
+.checkbox-stack {
   display: grid;
   gap: 0.75rem;
-  margin: 1.25rem 0;
-  padding: 1rem;
-  background: white;
-  border: 1px solid #d8deea;
-  border-radius: 12px;
 }
 
-label {
-  display: grid;
-  gap: 0.35rem;
-  font-weight: 600;
+.panel {
+  width: 100%;
 }
 
-.checkbox {
+.panel-heading,
+.connect-panel,
+.actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-weight: 500;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
-.checkbox input {
-  width: auto;
-}
-
-.warning {
-  color: #9f2d20;
-}
-
-p.warning {
-  margin: 0;
-  font-weight: 600;
-}
-
-input,
-select,
-button,
-.button {
-  border-radius: 8px;
-  border: 1px solid #b9c2d4;
-  font: inherit;
-  padding: 0.65rem 0.8rem;
-}
-
-button,
-.button {
-  color: white;
-  background: #2251cc;
-  border-color: #2251cc;
-  cursor: pointer;
-  text-align: center;
-  text-decoration: none;
-}
-
-button:disabled,
-.disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem;
 }
 
 .actions {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  justify-content: flex-start;
 }
 
-.note {
-  color: #5d6678;
+.download-link[aria-disabled="true"] {
+  pointer-events: none;
+  opacity: 0.5;
 }
 
 pre {
@@ -93,23 +60,12 @@ pre {
   line-height: 1.5;
 }
 
-.diagnostics-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.diagnostics-heading h2,
-.current-status,
 .diagnostics pre {
   margin: 0;
 }
 
-.diagnostics-heading button {
-  padding: 0.4rem 0.7rem;
-}
-
-.current-status {
-  font-weight: 600;
+@media (max-width: 640px) {
+  .app-shell {
+    padding: 1rem;
+  }
 }

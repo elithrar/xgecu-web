@@ -9,14 +9,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "xgecu-web": "workspace:*",
+    "@cloudflare/kumo": "^2.7.0",
+    "@phosphor-icons/react": "^2.1.10",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "typescript": "latest",
     "react": "latest",
-    "react-dom": "latest"
-  },
-  "devDependencies": {}
+    "react-dom": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "xgecu-web": "workspace:*"
+  }
 }
