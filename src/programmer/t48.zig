@@ -122,6 +122,7 @@ pub fn beginTransaction(trans: transport.Transport, device: Device) Error!void {
     var msg: [packet.begin_len]u8 = undefined;
     writeBeginPacket(&msg, .t48, device);
 
+    errdefer endTransaction(trans) catch {};
     try trans.send(&msg);
     const status = try requestStatus(trans);
     if (status.overcurrent != 0) return Error.Overcurrent;
@@ -135,7 +136,7 @@ pub fn endTransaction(trans: transport.Transport) Error!void {
 }
 
 pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u32, out: []u8) Error!void {
-    if (out.len > std.math.maxInt(u16)) return transport.Error.Io;
+    if (out.len > std.math.maxInt(u16) or !validAddressRange(address, out.len)) return transport.Error.Io;
 
     var msg = [_]u8{0} ** packet.short_command_len;
     msg[0] = readCommand(kind);
@@ -146,7 +147,7 @@ pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u3
 }
 
 pub fn writeBlock(trans: transport.Transport, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
-    if (data.len > std.math.maxInt(u16)) return transport.Error.Io;
+    if (data.len > std.math.maxInt(u16) or !validAddressRange(address, data.len)) return transport.Error.Io;
 
     var msg = [_]u8{0} ** packet.short_command_len;
     msg[0] = writeCommand(kind);
@@ -164,7 +165,8 @@ pub fn readFuses(trans: transport.Transport, device: Device, kind: FuseKind, ite
     msg[2] = items_count;
     endian.storeInt(msg[4..8], device.code_memory_size, .little);
     try trans.send(msg[0..packet.short_command_len]);
-    _ = try trans.recv(&msg);
+    const received = try trans.recv(&msg);
+    if (received < packet.short_command_len + out.len) return transport.Error.Io;
     @memcpy(out, msg[8 .. 8 + out.len]);
 }
 
@@ -189,7 +191,8 @@ pub fn readJedecRow(trans: transport.Transport, device: Device, row: JedecRow) E
     msg[4] = row.row;
     msg[5] = row.flags;
     try trans.send(msg[0..packet.short_command_len]);
-    _ = try trans.recv(&msg);
+    const received = try trans.recv(&msg);
+    if (received < byte_count) return transport.Error.Io;
     @memcpy(row.data[0..byte_count], msg[0..byte_count]);
 }
 
@@ -212,9 +215,10 @@ pub fn getChipId(trans: transport.Transport, chip_id_bytes_count: u8) Error!Chip
     try trans.send(&request);
 
     var response = [_]u8{0} ** packet.chip_id_len;
-    _ = try trans.recv(&response);
+    const received = try trans.recv(&response);
     const id_type = response[0];
     const id_len = @min(chip_id_bytes_count, 4);
+    if (received < 2 + id_len) return transport.Error.Io;
     const byte_order: endian.Endian = if (id_type == 3 or id_type == 4) .little else .big;
     const value: u32 = if (id_len == 0) 0 else @intCast(endian.loadInt(response[2 .. 2 + id_len], byte_order));
     return .{ .id_type = id_type, .value = value };
@@ -225,7 +229,8 @@ pub fn spiAutodetect(trans: transport.Transport, package_pins: u8) Error!u32 {
     msg[0] = command.autodetect;
     msg[8] = if (package_pins == 16) 1 else 0;
     try trans.send(msg[0..10]);
-    _ = try trans.recv(msg[0..packet.chip_id_len]);
+    const received = try trans.recv(msg[0..packet.chip_id_len]);
+    if (received < 5) return transport.Error.Io;
     return @intCast(endian.loadInt(msg[2..5], .big));
 }
 
@@ -236,7 +241,8 @@ pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
     msg[4] = pld;
     try trans.send(&msg);
     var response = [_]u8{0} ** packet.erase_response_len;
-    _ = try trans.recv(&response);
+    const received = try trans.recv(&response);
+    if (received < 13) return transport.Error.Io;
     if (response[12] != 0) return Error.Overcurrent;
     if (response[0] != 0) return Error.ProgrammerStatusError;
 }
@@ -258,7 +264,8 @@ pub fn requestStatus(trans: transport.Transport) Error!Status {
     msg[0] = command.request_status;
     try trans.send(msg[0..packet.short_command_len]);
     @memset(&msg, 0);
-    _ = try trans.recv(&msg);
+    const received = try trans.recv(&msg);
+    if (received < 13) return transport.Error.Io;
     return .{
         .error_code = msg[0],
         .address = @intCast(endian.loadInt(msg[8..12], .little)),
@@ -279,7 +286,8 @@ pub fn testLogicVector(trans: transport.Transport, vcc_index: u8, pull_down: boo
     endian.storeInt(msg[4..8], vector_index, .little);
     try logic.packNibbles(msg[8..], states[0..pin_len]);
     try trans.send(&msg);
-    _ = try trans.recv(&msg);
+    const received = try trans.recv(&msg);
+    if (received < 8 + (pin_len + 1) / 2) return transport.Error.Io;
     if (msg[1] != 0) return Error.Overcurrent;
     try logic.unpackNibbles(out, msg[8..], pin_len);
 }
@@ -318,6 +326,10 @@ fn writeFuseCommand(kind: FuseKind) u8 {
 
 fn rowByteCount(size_bits: u8) usize {
     return (@as(usize, size_bits) + 7) / 8;
+}
+
+fn validAddressRange(address: u32, len: usize) bool {
+    return @as(u64, address) + len <= @as(u64, std.math.maxInt(u32)) + 1;
 }
 
 test "begin transaction sends expected T48 packet fields" {
@@ -376,6 +388,16 @@ test "begin transaction rejects T48 programmer status errors" {
     defer fake.deinit();
 
     try std.testing.expectError(Error.ProgrammerStatusError, beginTransaction(fake.transport(), testDevice()));
+    try std.testing.expectEqual(@as(u8, command.end_transaction), fake.sent.items[fake.sent.items.len - packet.short_command_len]);
+}
+
+test "T48 status and erase reject truncated responses" {
+    var short = [_]u8{0} ** 12;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &short);
+    defer fake.deinit();
+
+    try std.testing.expectError(transport.Error.Io, requestStatus(fake.transport()));
+    try std.testing.expectError(transport.Error.Io, erase(fake.transport(), 0, 0));
 }
 
 test "read and write block use T48 commands and payload API" {
@@ -395,6 +417,16 @@ test "read and write block use T48 commands and payload API" {
     try writeBlock(fake.transport(), .data, 0x20, &payload);
     try std.testing.expectEqualSlices(u8, &payload, fake.payload_sent.items);
     try std.testing.expectEqual(@as(u8, command.write_data), fake.sent.items[8]);
+}
+
+test "T48 blocks reject address ranges that cross 32-bit memory" {
+    var fake = transport.FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+    var bytes = [_]u8{ 1, 2 };
+
+    try std.testing.expectError(transport.Error.Io, readBlock(fake.transport(), .code, std.math.maxInt(u32), &bytes));
+    try std.testing.expectError(transport.Error.Io, writeBlock(fake.transport(), .code, std.math.maxInt(u32), &bytes));
+    try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
 }
 
 test "get chip ID decodes big and little endian ID formats" {

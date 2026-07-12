@@ -90,13 +90,17 @@ export class WasmBridge {
   }
 
   startReadROM(options: { programmer: ProgrammerKind; device: string; memory: MemoryKind; skipIdCheck: boolean; continueOnIdMismatch: boolean }): number {
+    const programmer = programmerToAbi(options.programmer);
+    const memory = memoryToAbi(options.memory);
+    requireBoolean(options.skipIdCheck, "skipIdCheck");
+    requireBoolean(options.continueOnIdMismatch, "continueOnIdMismatch");
     const deviceBytes = textEncoder.encode(options.device);
     return this.withBytes(deviceBytes, (devicePtr) => {
       const handle = this.exports.mp_start_read_rom(
-        programmerToAbi(options.programmer),
+        programmer,
         devicePtr,
         deviceBytes.byteLength,
-        memoryToAbi(options.memory),
+        memory,
         options.skipIdCheck ? 1 : 0,
         options.continueOnIdMismatch ? 1 : 0
       );
@@ -119,14 +123,27 @@ export class WasmBridge {
     unprotectBefore: boolean;
     protectAfter: boolean;
   }): number {
+    const programmer = programmerToAbi(options.programmer);
+    const memory = memoryToAbi(options.memory);
+    if (!(options.data instanceof Uint8Array)) throw new XgecuWebUSBError("data must be a Uint8Array.", "InvalidInput");
+    for (const [name, value] of [
+      ["erase", options.erase],
+      ["verify", options.verify],
+      ["skipIdCheck", options.skipIdCheck],
+      ["continueOnIdMismatch", options.continueOnIdMismatch],
+      ["unprotectBefore", options.unprotectBefore],
+      ["protectAfter", options.protectAfter]
+    ] as const) requireBoolean(value, name);
+    requireByte(options.eraseNumFuses, "eraseNumFuses");
+    requireByte(options.erasePld, "erasePld");
     const deviceBytes = textEncoder.encode(options.device);
     return this.withBytes(deviceBytes, (devicePtr) =>
       this.withBytes(options.data, (dataPtr) => {
         const handle = this.exports.mp_start_write_rom(
-          programmerToAbi(options.programmer),
+          programmer,
           devicePtr,
           deviceBytes.byteLength,
-          memoryToAbi(options.memory),
+          memory,
           dataPtr,
           options.data.byteLength,
           options.erase ? 1 : 0,
@@ -145,6 +162,19 @@ export class WasmBridge {
   }
 
   async runOperation(handle: number, performTransfer: UsbTransferHandler, options: RunOperationOptions = {}): Promise<Uint8Array> {
+    let lastProgress: RomProgressEvent | undefined;
+    const emitProgress = () => {
+      if (!options.onProgress) return;
+      const progress = this.operationProgress(handle);
+      if (
+        lastProgress?.phase === progress.phase &&
+        lastProgress.offset === progress.offset &&
+        lastProgress.total === progress.total
+      ) return;
+      lastProgress = progress;
+      options.onProgress(progress);
+    };
+
     try {
       for (;;) {
         if (options.signal?.aborted) {
@@ -155,7 +185,7 @@ export class WasmBridge {
         const kind = this.exports.mp_operation_next(handle);
         if (kind === 0) {
           this.throwIfError(this.exports.mp_operation_result(handle));
-          options.onProgress?.(this.operationProgress(handle));
+          emitProgress();
           return this.operationResultBytes(handle).slice();
         }
         if (kind === 1) {
@@ -172,7 +202,7 @@ export class WasmBridge {
             await this.drainCleanupBestEffort(handle, performTransfer);
             throw this.operationError(handle);
           }
-          options.onProgress?.(this.operationProgress(handle));
+          emitProgress();
           continue;
         }
         if (kind === 2) {
@@ -194,11 +224,15 @@ export class WasmBridge {
             await this.drainCleanupBestEffort(handle, performTransfer);
             throw this.operationError(handle);
           }
-          options.onProgress?.(this.operationProgress(handle));
+          emitProgress();
           continue;
         }
         throw this.operationError(handle);
       }
+    } catch (error) {
+      this.exports.mp_operation_abort(handle);
+      await this.drainCleanupBestEffort(handle, performTransfer);
+      throw error;
     } finally {
       this.exports.mp_operation_destroy(handle);
     }
@@ -293,6 +327,16 @@ export class WasmBridge {
   }
 }
 
+function requireBoolean(value: unknown, name: string): asserts value is boolean {
+  if (typeof value !== "boolean") throw new XgecuWebUSBError(`${name} must be a boolean.`, "InvalidInput");
+}
+
+function requireByte(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 0xff) {
+    throw new XgecuWebUSBError(`${name} must be an integer from 0 to 255.`, "InvalidInput");
+  }
+}
+
 export function programmerToAbi(programmer: ProgrammerKind): number {
   switch (programmer) {
     case "auto":
@@ -301,6 +345,8 @@ export function programmerToAbi(programmer: ProgrammerKind): number {
       return 1;
     case "t56":
       return 2;
+    default:
+      throw new XgecuWebUSBError("Invalid programmer kind.", "InvalidInput");
   }
 }
 
@@ -312,6 +358,8 @@ export function memoryToAbi(memory: MemoryKind): number {
       return 1;
     case "user":
       return 2;
+    default:
+      throw new XgecuWebUSBError("Invalid memory kind.", "InvalidInput");
   }
 }
 

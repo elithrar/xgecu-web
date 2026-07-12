@@ -96,19 +96,42 @@ export interface USBDeviceLike {
   readonly productName?: string;
   readonly manufacturerName?: string;
   readonly serialNumber?: string;
-  readonly configuration: unknown | null;
+  readonly configuration: USBConfigurationLike | null;
   open(): Promise<void>;
   close(): Promise<void>;
   selectConfiguration(configurationValue: number): Promise<void>;
   claimInterface(interfaceNumber: number): Promise<void>;
+  selectAlternateInterface?(interfaceNumber: number, alternateSetting: number): Promise<void>;
   releaseInterface?(interfaceNumber: number): Promise<void>;
   transferOut(endpointNumber: number, data: BufferSource): Promise<USBOutTransferResultLike>;
   transferIn(endpointNumber: number, length: number): Promise<USBInTransferResultLike>;
 }
 
+export interface USBConfigurationLike {
+  readonly configurationValue: number;
+  readonly interfaces?: readonly USBInterfaceLike[];
+}
+
+export interface USBInterfaceLike {
+  readonly interfaceNumber: number;
+  readonly alternate: USBAlternateInterfaceLike;
+  readonly alternates: readonly USBAlternateInterfaceLike[];
+}
+
+export interface USBAlternateInterfaceLike {
+  readonly alternateSetting: number;
+  readonly endpoints: readonly USBEndpointLike[];
+}
+
+export interface USBEndpointLike {
+  readonly endpointNumber: number;
+  readonly direction: "in" | "out";
+  readonly type: "bulk" | "interrupt" | "isochronous";
+}
+
 export interface USBOutTransferResultLike {
   readonly status: "ok" | "stall" | "babble";
-  readonly bytesWritten?: number;
+  readonly bytesWritten: number;
 }
 
 export interface USBInTransferResultLike {

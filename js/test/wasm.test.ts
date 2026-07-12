@@ -21,6 +21,27 @@ describe("WasmBridge", () => {
     ).toThrow("device not found");
   });
 
+  it("rejects malformed low-level write options before calling Wasm", () => {
+    const fake = fakeExports();
+    const bridge = new WasmBridge(fake);
+
+    expect(() => bridge.startWriteROM({
+      programmer: "t48",
+      device: "AT28C64B",
+      memory: "code",
+      data: new Uint8Array([1]),
+      erase: true,
+      eraseNumFuses: 256,
+      erasePld: 0,
+      verify: true,
+      skipIdCheck: false,
+      continueOnIdMismatch: false,
+      unprotectBefore: false,
+      protectAfter: false
+    })).toThrow("eraseNumFuses must be an integer from 0 to 255");
+    expect(fake.mp_start_write_rom).not.toHaveBeenCalled();
+  });
+
   it("runs OUT and IN transfers and always destroys the operation", async () => {
     const fake = fakeExports();
     const outbound = new Uint8Array([0xa5, 0x5a]);
@@ -48,6 +69,29 @@ describe("WasmBridge", () => {
     expect(fake.mp_operation_destroy).toHaveBeenCalledWith(123);
   });
 
+  it("emits progress only when the public progress values change", async () => {
+    const fake = fakeExports();
+    fake.sequence = [1, 2, 0];
+    fake.inLength = 1;
+    fake.mp_operation_phase = vi.fn()
+      .mockReturnValueOnce(5)
+      .mockReturnValueOnce(5)
+      .mockReturnValueOnce(8);
+    fake.mp_operation_offset = vi.fn(() => 512);
+    fake.mp_operation_total = vi.fn(() => 8192);
+    const onProgress = vi.fn();
+
+    await new WasmBridge(fake).runOperation(
+      123,
+      async (transfer) => transfer.direction === "in" ? new Uint8Array([1]) : undefined,
+      { onProgress }
+    );
+
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress).toHaveBeenNthCalledWith(1, { phase: "reading", offset: 512, total: 8192 });
+    expect(onProgress).toHaveBeenNthCalledWith(2, { phase: "done", offset: 512, total: 8192 });
+  });
+
   it("destroys failed operations and reports Wasm errors", async () => {
     const fake = fakeExports();
     fake.error = "VerifyFailed";
@@ -56,6 +100,21 @@ describe("WasmBridge", () => {
 
     await expect(bridge.runOperation(9, async () => undefined)).rejects.toThrow(XgecuWebUSBError);
     expect(fake.mp_operation_destroy).toHaveBeenCalledWith(9);
+  });
+
+  it("aborts and drains cleanup when a progress callback throws", async () => {
+    const fake = fakeExports();
+    fake.sequence = [1, 1, 3];
+    const bridge = new WasmBridge(fake);
+    const transfers: UsbTransfer[] = [];
+
+    await expect(bridge.runOperation(123, async (transfer) => {
+      transfers.push(transfer);
+    }, { onProgress: () => { throw new Error("progress failed"); } })).rejects.toThrow("progress failed");
+
+    expect(fake.mp_operation_abort).toHaveBeenCalledWith(123);
+    expect(transfers).toHaveLength(2);
+    expect(fake.mp_operation_destroy).toHaveBeenCalledWith(123);
   });
 });
 

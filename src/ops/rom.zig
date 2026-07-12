@@ -92,6 +92,8 @@ pub fn writeROM(
     const size = memorySize(device, options.memory);
     if (size == 0) return Error.EmptyMemoryRegion;
     if (data.len > size) return Error.InputTooLarge;
+    if (options.erase and options.memory != .code) return Error.InputTooLarge;
+    if (options.erase and data.len != size) return Error.InputTooLarge;
 
     const descriptor = device.descriptor(info.programmer);
     var protocol_open = false;
@@ -115,7 +117,10 @@ pub fn writeROM(
         protocol_open = true;
     }
 
-    if (options.unprotect_before) try protectOff(info.programmer, trans);
+    if (options.unprotect_before) {
+        try protectOff(info.programmer, trans);
+        try checkProgrammerStatus(info.programmer, trans);
+    }
 
     var offset: usize = 0;
     const chunk_size = @max(@as(usize, descriptor.write_buffer_size), 1);
@@ -127,8 +132,6 @@ pub fn writeROM(
         if (status.error_code != 0) return Error.ProgrammerStatusError;
         offset += len;
     }
-
-    if (options.protect_after) try protectOn(info.programmer, trans);
 
     if (options.verify) {
         var actual = try allocator.alloc(u8, data.len);
@@ -142,6 +145,10 @@ pub fn writeROM(
             offset += len;
         }
         if (!std.mem.eql(u8, data, actual)) return Error.VerifyFailed;
+    }
+    if (options.protect_after) {
+        try protectOn(info.programmer, trans);
+        try checkProgrammerStatus(info.programmer, trans);
     }
     try protocol.end(info.programmer, trans);
     protocol_open = false;
@@ -187,6 +194,10 @@ fn readChunkSize(programmer: model.Programmer, descriptor: t48.Device) usize {
 
 fn checkReadStatus(programmer: model.Programmer, trans: transport_mod.Transport) Error!void {
     if (programmer != .t48) return;
+    try checkProgrammerStatus(programmer, trans);
+}
+
+fn checkProgrammerStatus(programmer: model.Programmer, trans: transport_mod.Transport) Error!void {
     const status = try protocol.requestStatus(programmer, trans);
     if (status.overcurrent != 0) return Error.Overcurrent;
     if (status.error_code != 0) return Error.ProgrammerStatusError;
@@ -266,7 +277,7 @@ test "readROM reports chip ID mismatch before reading payload" {
     try std.testing.expectEqual(@as(usize, 0), fake.payload_sent.items.len);
 }
 
-test "writeROM uses T48 erase write status and verify sequence" {
+test "writeROM uses T48 write status and verify sequence" {
     var response = [_]u8{0} ** 80;
     response[4] = 1;
     response[5] = 2;
@@ -280,9 +291,8 @@ test "writeROM uses T48 erase write status and verify sequence" {
     fake.payload_response = &verify_payload;
     defer fake.deinit();
 
-    try writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &verify_payload, .{ .programmer = .t48, .skip_id_check = true });
+    try writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &verify_payload, .{ .programmer = .t48, .erase = false, .skip_id_check = true });
 
-    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.erase) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
     try std.testing.expectEqualSlices(u8, &verify_payload, fake.payload_sent.items);
@@ -303,5 +313,16 @@ test "writeROM reports verify mismatch for T48" {
     fake.payload_response = &verify_payload;
     defer fake.deinit();
 
-    try std.testing.expectError(Error.VerifyFailed, writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &data, .{ .programmer = .t48, .skip_id_check = true }));
+    try std.testing.expectError(Error.VerifyFailed, writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &data, .{ .programmer = .t48, .erase = false, .skip_id_check = true }));
+}
+
+test "writeROM rejects partial data before an erase transaction" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[6] = 7;
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    try std.testing.expectError(Error.InputTooLarge, writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &.{0xaa}, .{ .programmer = .t48 }));
+    try std.testing.expectEqual(@as(usize, protocol_bytes.packet.system_info_request_len), fake.sent.items.len);
 }

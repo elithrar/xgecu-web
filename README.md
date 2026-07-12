@@ -4,6 +4,8 @@ Browser WebUSB APIs for programming ROM devices with XGecu T48/T56 programmers.
 
 This package is intentionally scoped to T48 and T56 hardware, with a Zig core, a browser-oriented Wasm ABI, and a TypeScript WebUSB API.
 
+T56 protocol support is implemented, but the seed catalog currently contains no validated T56 device records or algorithm payloads. High-level T56 ROM operations remain unavailable until those records are added; current catalog-backed examples target T48.
+
 ## Install/build from source
 
 ```sh
@@ -124,7 +126,8 @@ The current JSON source is intentionally small seed data and should be expanded 
 
 ## Hardware safety
 
-- `writeROM` is destructive when `erase` is enabled.
+- `writeROM` is always hardware-affecting and potentially destructive; `erase: true` additionally erases the selected memory region before programming.
+- Erase writes are restricted to code memory and require a full image exactly matching that region.
 - Keep `verify: true` unless you have an external verification process.
 - Read and save a backup before writing.
 - Compare the patched image byte length with the readback byte length before writing.

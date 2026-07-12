@@ -83,8 +83,33 @@ button:disabled,
 
 pre {
   white-space: pre-wrap;
+  overflow: auto;
+  max-height: 28rem;
   background: #101828;
   color: #d9e2ff;
   border-radius: 12px;
   padding: 1rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.diagnostics-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.diagnostics-heading h2,
+.current-status,
+.diagnostics pre {
+  margin: 0;
+}
+
+.diagnostics-heading button {
+  padding: 0.4rem 0.7rem;
+}
+
+.current-status {
+  font-weight: 600;
 }

@@ -22,7 +22,7 @@ pub const SystemInfo = struct {
     model_name: []const u8,
     status: Status,
     firmware: u16,
-    firmware_string: [8]u8,
+    firmware_string: [11]u8,
     device_code: [8]u8,
     serial_number: [24]u8,
     manufacture_date: [16]u8 = [_]u8{0} ** 16,
@@ -51,12 +51,12 @@ pub fn getSystemInfo(trans: transport.Transport) !SystemInfo {
     try trans.send(&request);
 
     var msg = [_]u8{0} ** packet.system_info_response_len;
-    _ = try trans.recv(&msg);
-    return parseSystemInfo(&msg) orelse error.UnsupportedProgrammer;
+    const received = try trans.recv(&msg);
+    return parseSystemInfo(msg[0..received]) orelse error.UnsupportedProgrammer;
 }
 
 pub fn parseSystemInfo(msg: []const u8) ?SystemInfo {
-    if (msg.len < packet.system_info_response_len) return null;
+    if (msg.len < packet.system_info_response_min_len) return null;
     const version = msg[6];
     var info = SystemInfo{
         .programmer = .auto,
@@ -85,7 +85,8 @@ pub fn parseSystemInfo(msg: []const u8) ?SystemInfo {
             @memcpy(&info.device_code, msg[24..32]);
             @memcpy(&info.serial_number, msg[32..56]);
             const raw_voltage: u32 = @intCast(endian.loadInt(msg[56..60], .little));
-            info.voltage = @as(f32, @floatFromInt(raw_voltage * 0xccf6 / 0x27000)) / 100.0;
+            const scaled_voltage = @as(u64, raw_voltage) * 0xccf6 / 0x27000;
+            info.voltage = @as(f32, @floatFromInt(scaled_voltage)) / 100.0;
             info.speed = msg[60];
             info.external_power = if (version == mp_t56) msg[62] else 0;
         },
@@ -94,9 +95,8 @@ pub fn parseSystemInfo(msg: []const u8) ?SystemInfo {
     return info;
 }
 
-fn firmwareString(hw: u8, major: u8, minor: u8) [8]u8 {
-    var out = [_]u8{0} ** 8;
-    // The format is fixed-width ("00.0.00"), so the 8-byte buffer is sufficient.
+fn firmwareString(hw: u8, major: u8, minor: u8) [11]u8 {
+    var out = [_]u8{0} ** 11;
     const text = std.fmt.bufPrint(&out, "{d:0>2}.{d}.{d:0>2}", .{ hw, major, minor }) catch unreachable;
     @memset(out[text.len..], 0);
     return out;
@@ -121,6 +121,40 @@ test "parse T56 system info" {
     try std.testing.expectEqualSlices(u8, "CODE1234", &info.device_code);
     try std.testing.expectEqualStrings("00.12.34", std.mem.sliceTo(&info.firmware_string, 0));
     try std.testing.expectEqual(@as(u8, 1), info.external_power);
+}
+
+test "parse 63-byte T48 system info response" {
+    var msg = [_]u8{0} ** packet.system_info_response_min_len;
+    msg[4] = 1;
+    msg[5] = 2;
+    msg[6] = mp_t48;
+    @memcpy(msg[8..24], "2026-07-12......");
+    @memcpy(msg[24..32], "T48CODE!");
+    @memcpy(msg[32..54], "SERIAL-T48-00000000000");
+    endian.storeInt(msg[56..60], 5000, .little);
+    msg[60] = 3;
+
+    const info = parseSystemInfo(&msg).?;
+    try std.testing.expectEqual(model.Programmer.t48, info.programmer);
+    try std.testing.expectEqual(Status.normal, info.status);
+    try std.testing.expectEqual(@as(u8, 3), info.speed);
+}
+
+test "reject system info shorter than required fields" {
+    var msg = [_]u8{0} ** (packet.system_info_response_min_len - 1);
+    msg[6] = mp_t48;
+    try std.testing.expectEqual(@as(?SystemInfo, null), parseSystemInfo(&msg));
+}
+
+test "parse system info tolerates maximum scalar fields" {
+    var msg = [_]u8{0xff} ** packet.system_info_response_min_len;
+    msg[4] = 255;
+    msg[5] = 255;
+    msg[6] = mp_t48;
+
+    const info = parseSystemInfo(&msg).?;
+    try std.testing.expectEqualStrings("00.255.255", std.mem.sliceTo(&info.firmware_string, 0));
+    try std.testing.expect(std.math.isFinite(info.voltage));
 }
 
 test "session sends system-info request through transport" {

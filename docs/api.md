@@ -66,7 +66,7 @@ try {
 }
 ```
 
-Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `AlgorithmUnavailable`, `InputTooLarge`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
+Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `AlgorithmUnavailable`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
 
 ## `createProgrammer(options?)`
 
@@ -123,11 +123,16 @@ for (const programmer of programmers) {
 Use `connectProgrammer(device)` with a `USBDevice` returned by `navigator.usb.getDevices()` when you want to reconnect without showing the chooser.
 
 ```ts
+if (!navigator.usb) throw new Error("WebUSB is unavailable.");
 const authorized = await navigator.usb.getDevices();
 const existing = authorized.find((device) => device.vendorId === 0xa466 && device.productId === 0x0a53);
 if (existing) {
   const programmer = await api.connectProgrammer(existing);
-  // Use programmer with readROM/writeROM.
+  try {
+    // Use programmer with readROM/writeROM.
+  } finally {
+    await programmer.close();
+  }
 }
 ```
 
@@ -175,6 +180,7 @@ const data = await api.readROM({
 The returned `Uint8Array` length is the catalogued memory size for the selected memory region.
 Leave `skipIdCheck` at its default `false` unless you have an independent target-identification step.
 Pass an `AbortSignal` as `signal` to cancel before the next USB transfer.
+Progress callbacks are emitted when the public phase, offset, or total changes; internal USB transfers that leave all three values unchanged do not produce duplicate events.
 
 ## `writeROM(options)`
 
@@ -198,7 +204,18 @@ if (data.byteLength !== original.byteLength) {
   throw new Error(`Image size mismatch: expected ${original.byteLength} bytes, got ${data.byteLength}.`);
 }
 
-// Save original as a backup before continuing.
+const backupBytes = new Uint8Array(original).buffer;
+const backupUrl = URL.createObjectURL(new Blob([backupBytes], { type: "application/octet-stream" }));
+const backupLink = document.createElement("a");
+backupLink.href = backupUrl;
+backupLink.download = "AT28C64B-original.bin";
+backupLink.click();
+URL.revokeObjectURL(backupUrl);
+
+if (!window.confirm("Confirm the backup was saved and the chip marking, package, orientation, and adapter are correct.")) {
+  throw new Error("Write cancelled.");
+}
+
 await api.writeROM({
   programmer,
   device: "AT28C64B@DIP28",
@@ -218,11 +235,12 @@ await api.writeROM({
 });
 ```
 
-`erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts.
+`erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 `eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
+Hardware-affecting options are runtime-validated. Unknown enum values, non-boolean flags, and fuse/PLD values outside the integer range 0-255 throw `InvalidInput` before USB work begins.
 Protected flash workflows can opt into `unprotectBefore` and `protectAfter` when the chip and catalog flags require it.
-Only one ROM operation may be active per programmer connection; overlapping calls throw `OperationInProgress`.
+Only one ROM operation may be active per physical programmer; overlapping calls and connection closes throw `OperationInProgress`.
 
 For a complete backup-then-write browser flow, including image length checks, see `docs/examples.md`.
 
