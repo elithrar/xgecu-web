@@ -1,7 +1,16 @@
 import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Badge } from "@cloudflare/kumo/components/badge";
+import { Banner } from "@cloudflare/kumo/components/banner";
+import { Button, LinkButton } from "@cloudflare/kumo/components/button";
+import { Checkbox } from "@cloudflare/kumo/components/checkbox";
+import { Input } from "@cloudflare/kumo/components/input";
+import { LayerCard } from "@cloudflare/kumo/components/layer-card";
+import { Select } from "@cloudflare/kumo/components/select";
+import { Text } from "@cloudflare/kumo/components/text";
 import { createProgrammer } from "xgecu-web";
 import type { DeviceSummary, ProgrammerConnection, RomProgressEvent, XgecuWebUSB } from "xgecu-web";
+import "@cloudflare/kumo/styles/standalone";
 import "./styles.css";
 
 type LogEntry = Record<string, unknown> & {
@@ -91,6 +100,10 @@ function App() {
     }
   }, [api, query]);
   const devices = deviceList.devices;
+  const deviceItems = useMemo(
+    () => Object.fromEntries(devices.map((device) => [device.name, `${device.name} (${device.codeMemorySize} bytes)`])),
+    [devices]
+  );
   const selectedSummary = useMemo(() => devices.find((device) => device.name === selectedDevice) ?? null, [devices, selectedDevice]);
   const canWrite = Boolean(
     api && programmer && writeImage && backup && !busy &&
@@ -310,90 +323,144 @@ function App() {
     appendLog("info", "rom_image_loaded", { file_name: file.name, image_bytes: bytes.byteLength });
   }
 
+  function setSelectedDeviceValue(value: unknown) {
+    if (typeof value === "string") setSelectedDevice(value);
+  }
+
   return (
-    <main>
-      <h1>XGecu T48/T56 WebUSB ROM Demo</h1>
-      <p className="note">Use HTTPS or localhost in a Chromium-based browser. Write operations are destructive.</p>
-      <p className="note">The seed catalog currently contains T48 targets only; T56 operations require validated T56 catalog records and algorithm payloads.</p>
-
-      <section>
-        <button disabled={!api || busy} onClick={() => void connect()}>
-          Connect programmer
-        </button>
-        <span>{programmer ? `Connected: ${programmer.productName ?? programmer.serialNumber ?? "T48/T56"}` : "No programmer connected"}</span>
-      </section>
-
-      <section>
-        <label>
-          Search target devices
-          <input disabled={busy} value={query} onChange={(event) => setQuery(event.target.value)} />
-        </label>
-        <label>
-          Device
-          <select disabled={busy} value={selectedDevice} onChange={(event) => setSelectedDevice(event.target.value)}>
-            {devices.map((device) => (
-              <option key={device.name} value={device.name}>
-                {device.name} ({device.codeMemorySize} bytes)
-              </option>
-            ))}
-          </select>
-        </label>
-        {selectedSummary ? (
-          <p className="note">
-            {selectedSummary.packagePins} pins, {selectedSummary.codeMemorySize} code bytes, page size {selectedSummary.pageSize}
-            {selectedSummary.chipIdBytesCount ? `, chip ID 0x${selectedSummary.chipId.toString(16)}` : ", no catalogued chip ID"}.
-          </p>
-        ) : (
-          <p className="warning">Selected device is not in the current search results.</p>
-        )}
-      </section>
-
-      <section className="actions">
-        <button disabled={!api || !programmer || busy} onClick={() => void readRom()}>
-          Read ROM
-        </button>
-        <a
-          className={backup ? "button" : "button disabled"}
-          download={`${backup?.target ?? selectedDevice}.bin`}
-          href={downloadUrl}
-        >
-          Download readback
-        </a>
-      </section>
-
-      <section>
-        <label>
-          ROM image to write
-          <input disabled={busy} type="file" onChange={(event) => void onFileSelected(event.currentTarget.files?.[0])} />
-        </label>
-        <label className="checkbox">
-          <input disabled={busy} type="checkbox" checked={skipIdCheck} onChange={(event) => {
-            setSkipIdCheck(event.currentTarget.checked);
-            setConfirmWrite(false);
-          }} />
-          Skip chip ID check only if you have externally identified the chip
-        </label>
-        <label className="checkbox warning">
-          <input disabled={busy} type="checkbox" checked={confirmWrite} onChange={(event) => setConfirmWrite(event.currentTarget.checked)} />
-          I saved the readback, confirmed chip orientation, and verified the image length
-        </label>
-        {writeImage && backup && writeImage.byteLength !== backup.data.byteLength ? (
-          <p className="warning">Image size mismatch: expected {backup.data.byteLength} bytes, got {writeImage.byteLength}.</p>
-        ) : null}
-        {!backup ? <p className="note">Read and download a backup before writing is enabled.</p> : null}
-        <button disabled={!canWrite} onClick={() => void writeRom()}>
-          Write ROM with erase + verify
-        </button>
-      </section>
-
-      <section className="diagnostics">
-        <div className="diagnostics-heading">
-          <h2>Diagnostics</h2>
-          <button type="button" onClick={() => setLogs([])}>Clear logs</button>
+    <main className="app-shell">
+      <header className="hero">
+        <Text variant="heading1" as="h1">XGecu T48/T56 WebUSB ROM Demo</Text>
+        <div className="banner-stack">
+          <Banner
+            variant="alert"
+            title="Write operations are destructive"
+            description="Use HTTPS or localhost in a Chromium-based browser, and always read and save a backup before writing."
+          />
+          <Banner
+            variant="secondary"
+            title="Catalog status"
+            description="The seed catalog currently contains T48 targets only; T56 operations require validated T56 catalog records and algorithm payloads."
+          />
         </div>
-        <p className="current-status">{status}</p>
-        <pre aria-label="Diagnostic log">{logs.map((entry) => JSON.stringify(entry)).join("\n")}</pre>
-      </section>
+      </header>
+
+      <LayerCard className="panel">
+        <LayerCard.Secondary className="panel-heading">
+          <Text variant="heading3" as="h2">Programmer</Text>
+          <Badge variant={programmer ? "success" : "neutral"} appearance="dot">
+            {programmer ? "Connected" : "Disconnected"}
+          </Badge>
+        </LayerCard.Secondary>
+        <LayerCard.Primary className="panel-body connect-panel">
+          <Button variant="primary" disabled={!api || busy} loading={busy && !programmer} onClick={() => void connect()}>
+            Connect programmer
+          </Button>
+          <Text variant="secondary">
+            {programmer ? `Connected: ${programmer.productName ?? programmer.serialNumber ?? "T48/T56"}` : "No programmer connected"}
+          </Text>
+        </LayerCard.Primary>
+      </LayerCard>
+
+      <LayerCard className="panel">
+        <LayerCard.Secondary>
+          <Text variant="heading3" as="h2">Target Device</Text>
+        </LayerCard.Secondary>
+        <LayerCard.Primary className="panel-body">
+          <div className="field-grid">
+            <Input label="Search target devices" disabled={busy} value={query} onChange={(event) => setQuery(event.target.value)} />
+            <Select
+              label="Device"
+              disabled={busy}
+              value={selectedDevice}
+              onValueChange={setSelectedDeviceValue}
+              items={deviceItems}
+            />
+          </div>
+          {selectedSummary ? (
+            <Text variant="secondary">
+              {selectedSummary.packagePins} pins, {selectedSummary.codeMemorySize} code bytes, page size {selectedSummary.pageSize}
+              {selectedSummary.chipIdBytesCount ? `, chip ID 0x${selectedSummary.chipId.toString(16)}` : ", no catalogued chip ID"}.
+            </Text>
+          ) : (
+            <Banner variant="error" title="Selected device is not in the current search results" />
+          )}
+        </LayerCard.Primary>
+      </LayerCard>
+
+      <LayerCard className="panel">
+        <LayerCard.Secondary>
+          <Text variant="heading3" as="h2">Read Backup</Text>
+        </LayerCard.Secondary>
+        <LayerCard.Primary className="panel-body actions">
+          <Button variant="primary" disabled={!api || !programmer || busy} onClick={() => void readRom()}>
+            Read ROM
+          </Button>
+          <LinkButton
+            className="download-link"
+            variant="secondary"
+            download={`${backup?.target ?? selectedDevice}.bin`}
+            href={downloadUrl}
+            aria-disabled={!backup}
+          >
+            Download readback
+          </LinkButton>
+        </LayerCard.Primary>
+      </LayerCard>
+
+      <LayerCard className="panel">
+        <LayerCard.Secondary>
+          <Text variant="heading3" as="h2">Write ROM</Text>
+        </LayerCard.Secondary>
+        <LayerCard.Primary className="panel-body">
+          <Input
+            label="ROM image to write"
+            disabled={busy}
+            type="file"
+            onChange={(event) => void onFileSelected(event.currentTarget.files?.[0])}
+          />
+          <div className="checkbox-stack">
+            <Checkbox
+              label="Skip chip ID check only if you have externally identified the chip"
+              disabled={busy}
+              checked={skipIdCheck}
+              onCheckedChange={(checked) => {
+                setSkipIdCheck(checked === true);
+                setConfirmWrite(false);
+              }}
+            />
+            <Checkbox
+              label="I saved the readback, confirmed chip orientation, and verified the image length"
+              disabled={busy}
+              checked={confirmWrite}
+              variant={confirmWrite ? "default" : "error"}
+              onCheckedChange={(checked) => setConfirmWrite(checked === true)}
+            />
+          </div>
+          {writeImage && backup && writeImage.byteLength !== backup.data.byteLength ? (
+            <Banner
+              variant="error"
+              title="Image size mismatch"
+              description={`Expected ${backup.data.byteLength} bytes, got ${writeImage.byteLength}.`}
+            />
+          ) : null}
+          {!backup ? <Text variant="secondary">Read and download a backup before writing is enabled.</Text> : null}
+          <Button variant="destructive" disabled={!canWrite} onClick={() => void writeRom()}>
+            Write ROM with erase + verify
+          </Button>
+        </LayerCard.Primary>
+      </LayerCard>
+
+      <LayerCard className="panel diagnostics">
+        <LayerCard.Secondary className="panel-heading">
+          <Text variant="heading3" as="h2">Diagnostics</Text>
+          <Button type="button" size="sm" variant="secondary" onClick={() => setLogs([])}>Clear logs</Button>
+        </LayerCard.Secondary>
+        <LayerCard.Primary className="panel-body">
+          <Text bold>{status}</Text>
+          <pre aria-label="Diagnostic log">{logs.map((entry) => JSON.stringify(entry)).join("\n")}</pre>
+        </LayerCard.Primary>
+      </LayerCard>
     </main>
   );
 }
