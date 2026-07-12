@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { WebUSBTransferError } from "../src/errors";
 import { BrowserXgecuWebUSB, performWebUSBTransfer } from "../src/webusb";
-import type { ProgrammerConnection, USBDeviceLike, USBNavigatorLike } from "../src/types";
+import type { USBConfigurationLike, USBDeviceLike, USBNavigatorLike } from "../src/types";
 import type { UsbTransferHandler, WasmBridge } from "../src/wasm";
 
 class FakeDevice implements USBDeviceLike {
@@ -11,7 +11,7 @@ class FakeDevice implements USBDeviceLike {
   productName = "T48";
   manufacturerName = "XGecu";
   serialNumber = "TEST";
-  configuration: unknown | null = null;
+  configuration: USBConfigurationLike | null = null;
   out: Array<{ endpoint: number; data: Uint8Array }> = [];
   in: Uint8Array[] = [new Uint8Array([1, 2, 3, 4])];
   outStatus: "ok" | "stall" | "babble" = "ok";
@@ -19,6 +19,8 @@ class FakeDevice implements USBDeviceLike {
   bytesWritten: number | undefined;
   omitInData = false;
   failRelease = false;
+  failClaim = false;
+  failTransferIn: unknown;
 
   async open(): Promise<void> {
     this.opened = true;
@@ -32,7 +34,14 @@ class FakeDevice implements USBDeviceLike {
     this.configuration = { configurationValue };
   }
 
-  claimInterface = vi.fn(async (_interfaceNumber: number) => {});
+  claimInterface = vi.fn(async (_interfaceNumber: number) => {
+    if (this.failClaim) throw new Error("claim failed");
+  });
+  selectAlternateInterface = vi.fn(async (_interfaceNumber: number, alternateSetting: number) => {
+    const usbInterface = this.configuration?.interfaces?.[0];
+    const alternate = usbInterface?.alternates.find((entry) => entry.alternateSetting === alternateSetting);
+    if (usbInterface && alternate) (usbInterface as { alternate: typeof alternate }).alternate = alternate;
+  });
   releaseInterface = vi.fn(async (_interfaceNumber: number) => {
     if (this.failRelease) throw new Error("release failed");
   });
@@ -43,6 +52,7 @@ class FakeDevice implements USBDeviceLike {
   }
 
   async transferIn(endpointNumber: number, length: number) {
+    if (this.failTransferIn) throw this.failTransferIn;
     if (this.omitInData) return { status: this.inStatus };
     const next = this.in.shift() ?? new Uint8Array(length);
     return { status: this.inStatus, data: new DataView(next.buffer, next.byteOffset, next.byteLength) };
@@ -60,6 +70,22 @@ describe("performWebUSBTransfer", () => {
     const device = new FakeDevice();
     const data = await performWebUSBTransfer(device, { direction: "in", endpoint: 2, length: 4 });
     expect(data).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+
+  it("accepts a successful short IN packet for protocol-level validation", async () => {
+    const device = new FakeDevice();
+    const data = await performWebUSBTransfer(device, { direction: "in", endpoint: 1, length: 20 });
+    expect(data).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+
+  it("wraps rejected WebUSB transfers with a stable error code", async () => {
+    const device = new FakeDevice();
+    const cause = new DOMException("disconnected", "NetworkError");
+    device.failTransferIn = cause;
+    await expect(performWebUSBTransfer(device, { direction: "in", endpoint: 1, length: 4 })).rejects.toMatchObject({
+      code: "WebUSBTransferFailed",
+      cause
+    });
   });
 
   it("rejects failed OUT transfers", async () => {
@@ -88,6 +114,9 @@ describe("performWebUSBTransfer", () => {
 describe("BrowserXgecuWebUSB", () => {
   it("opens, configures, and claims requested programmers", async () => {
     const device = new FakeDevice();
+    device.productName = "XGecu T48 \0";
+    device.manufacturerName = "XGecu.com\0\0";
+    device.serialNumber = "";
     const usb: USBNavigatorLike = {
       requestDevice: vi.fn(async () => device),
       getDevices: vi.fn(async () => [device])
@@ -97,6 +126,9 @@ describe("BrowserXgecuWebUSB", () => {
     const programmer = await api.requestProgrammer();
 
     expect(programmer.opened).toBe(true);
+    expect(programmer.productName).toBe("XGecu T48");
+    expect(programmer.manufacturerName).toBe("XGecu.com");
+    expect(programmer.serialNumber).toBeUndefined();
     expect(device.configuration).toEqual({ configurationValue: 1 });
     expect(device.claimInterface).toHaveBeenCalledWith(0);
   });
@@ -147,12 +179,82 @@ describe("BrowserXgecuWebUSB", () => {
     const device = new FakeDevice();
     device.opened = true;
     const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
-    const programmer = programmerConnection(device);
+    const programmer = await api.connectProgrammer(device);
 
     await api.readROM({ programmer, device: "AT28C64B" });
 
     expect(device.configuration).toEqual({ configurationValue: 1 });
     expect(device.claimInterface).toHaveBeenCalledWith(0);
+  });
+
+  it("selects configuration 1 when another configuration is active", async () => {
+    const device = new FakeDevice();
+    device.opened = true;
+    device.configuration = { configurationValue: 2 };
+    const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+    const programmer = await api.connectProgrammer(device);
+
+    expect(device.configuration).toEqual({ configurationValue: 1 });
+    expect(device.claimInterface).toHaveBeenCalledWith(0);
+    await programmer.close();
+  });
+
+  it("selects an alternate exposing the required bulk endpoints", async () => {
+    const device = new FakeDevice();
+    const empty = { alternateSetting: 0, endpoints: [] } as const;
+    const bulk = {
+      alternateSetting: 1,
+      endpoints: [
+        { endpointNumber: 1, direction: "in", type: "bulk" },
+        { endpointNumber: 1, direction: "out", type: "bulk" },
+        { endpointNumber: 2, direction: "in", type: "bulk" },
+        { endpointNumber: 2, direction: "out", type: "bulk" }
+      ]
+    } as const;
+    device.opened = true;
+    device.configuration = {
+      configurationValue: 1,
+      interfaces: [{ interfaceNumber: 0, alternate: empty, alternates: [empty, bulk] }]
+    };
+
+    await new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device)).connectProgrammer(device);
+
+    expect(device.selectAlternateInterface).toHaveBeenCalledWith(0, 1);
+  });
+
+  it("requires an explicit reconnect after a disconnect", async () => {
+    const device = new FakeDevice();
+    const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+    const programmer = await api.connectProgrammer(device);
+    device.opened = false;
+
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+
+    expect(device.claimInterface).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a shared device open until all connection wrappers close", async () => {
+    const device = new FakeDevice();
+    const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+    const first = await api.connectProgrammer(device);
+    const second = await api.connectProgrammer(device);
+
+    await first.close();
+    expect(device.opened).toBe(true);
+    expect(device.releaseInterface).not.toHaveBeenCalled();
+
+    await second.close();
+    expect(device.opened).toBe(false);
+    expect(device.releaseInterface).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back a device opened before claim failure", async () => {
+    const device = new FakeDevice();
+    device.failClaim = true;
+    const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+
+    await expect(api.connectProgrammer(device)).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+    expect(device.opened).toBe(false);
   });
 
   it("routes writeROM with safe defaults", async () => {
@@ -162,7 +264,8 @@ describe("BrowserXgecuWebUSB", () => {
     const runOperation = vi.spyOn(wasm, "runOperation");
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
     const programmer = await api.requestProgrammer();
-    const data = new Uint8Array([0x01, 0x02]);
+    const data = new Uint8Array(8192);
+    data.set([0x01, 0x02]);
 
     await api.writeROM({ programmer, device: "AT28C64B@DIP28", data });
 
@@ -194,6 +297,27 @@ describe("BrowserXgecuWebUSB", () => {
     expect(startWriteROM).not.toHaveBeenCalled();
   });
 
+  it("rejects partial writeROM data when erase is enabled", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    const startWriteROM = vi.spyOn(wasm, "startWriteROM");
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.writeROM({ programmer, device: "AT28C64B@DIP28", data: new Uint8Array([0x01]) })).rejects.toMatchObject({ code: "InputTooLarge" });
+    expect(startWriteROM).not.toHaveBeenCalled();
+  });
+
+  it("rejects erase writes outside code memory", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "resolveDevice").mockReturnValue({ ...fakeDeviceSummary(), aliases: ["AT28C64B"], dataMemorySize: 8 });
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.connectProgrammer(device);
+
+    await expect(api.writeROM({ programmer, device: "AT28C64B", memory: "data", data: new Uint8Array(8) })).rejects.toMatchObject({ code: "InvalidInput" });
+  });
+
   it("rejects empty writeROM data before starting Wasm operation", async () => {
     const device = new FakeDevice();
     const wasm = fakeWasm();
@@ -222,6 +346,87 @@ describe("BrowserXgecuWebUSB", () => {
     await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({ code: "OperationInProgress" });
     release();
     await first;
+  });
+
+  it("rejects close while a ROM operation is active", async () => {
+    const device = new FakeDevice();
+    let release!: () => void;
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "runOperation").mockImplementation(() => new Promise<Uint8Array>((resolve) => {
+      release = () => resolve(new Uint8Array([0x42]));
+    }));
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.connectProgrammer(device);
+
+    const read = api.readROM({ programmer, device: "AT28C64B" });
+    await expect(programmer.close()).rejects.toMatchObject({ code: "OperationInProgress" });
+    expect(device.opened).toBe(true);
+    release();
+    await read;
+    await programmer.close();
+  });
+
+  it("rejects connect while a ROM operation is active", async () => {
+    const device = new FakeDevice();
+    let release!: () => void;
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "runOperation").mockImplementation(() => new Promise<Uint8Array>((resolve) => {
+      release = () => resolve(new Uint8Array([0x42]));
+    }));
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.connectProgrammer(device);
+
+    const read = api.readROM({ programmer, device: "AT28C64B" });
+    await expect(api.connectProgrammer(device)).rejects.toMatchObject({ code: "OperationInProgress" });
+    release();
+    await read;
+  });
+
+  it("rejects operations through a closed connection", async () => {
+    const device = new FakeDevice();
+    const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+    const programmer = await api.connectProgrammer(device);
+    await programmer.close();
+
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+    expect(device.opened).toBe(false);
+  });
+
+  it("rejects structurally forged connection wrappers", async () => {
+    const device = new FakeDevice();
+    const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+    const forged = {
+      device,
+      vendorId: device.vendorId,
+      productId: device.productId,
+      opened: false,
+      close: async () => undefined
+    };
+
+    await expect(api.readROM({ programmer: forged, device: "AT28C64B" })).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+    expect(device.opened).toBe(false);
+  });
+
+  it("rejects malformed runtime safety options", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.connectProgrammer(device);
+
+    await expect(api.writeROM({ programmer, device: "AT28C64B", data: new Uint8Array(8192), skipIdCheck: "false" } as never)).rejects.toMatchObject({ code: "InvalidInput" });
+    await expect(api.writeROM({ programmer, device: "AT28C64B", data: new Uint8Array(8192), eraseNumFuses: 1.5 })).rejects.toMatchObject({ code: "InvalidInput" });
+  });
+
+  it("does not open a device for a pre-aborted operation", async () => {
+    const device = new FakeDevice();
+    const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+    const programmer = await api.connectProgrammer(device);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(api.readROM({ programmer, device: "AT28C64B", signal: controller.signal })).rejects.toMatchObject({ code: "OperationAborted" });
+    expect(device.opened).toBe(true);
+    expect(device.claimInterface).toHaveBeenCalledOnce();
   });
 });
 
@@ -260,19 +465,6 @@ function fakeUsb(device: FakeDevice): USBNavigatorLike {
   return {
     requestDevice: vi.fn(async () => device),
     getDevices: vi.fn(async () => [device])
-  };
-}
-
-function programmerConnection(device: FakeDevice): ProgrammerConnection {
-  return {
-    device,
-    productName: device.productName,
-    manufacturerName: device.manufacturerName,
-    serialNumber: device.serialNumber,
-    vendorId: device.vendorId,
-    productId: device.productId,
-    opened: device.opened,
-    close: async () => device.close()
   };
 }
 

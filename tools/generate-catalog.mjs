@@ -39,8 +39,15 @@ function generate(catalog) {
   out.push("");
 
   const names = new Set();
+  const lookupNames = new Map();
   const records = catalog.devices.map((device, index) => {
     validateDevice(device, index);
+    for (const lookupName of [device.canonicalName, ...device.aliases]) {
+      const key = lookupName.toLocaleLowerCase("en-US");
+      const owner = lookupNames.get(key);
+      if (owner != null && owner !== index) throw new Error(`duplicate catalog name or alias ${lookupName}`);
+      lookupNames.set(key, index);
+    }
     const name = symbolName(device.canonicalName);
     if (names.has(name)) throw new Error(`duplicate generated symbol ${name}`);
     names.add(name);
@@ -92,6 +99,10 @@ function validateDevice(device, index) {
   requiredArray(device, "aliases", label);
   requiredArray(device, "programmers", label);
   requiredString(device, "chipType", label);
+  for (const [aliasIndex, alias] of device.aliases.entries()) {
+    if (typeof alias !== "string" || alias.length === 0) throw new Error(`${label}.aliases[${aliasIndex}] must be a non-empty string`);
+  }
+  if (new Set(device.programmers).size !== device.programmers.length) throw new Error(`${label}.programmers contains duplicates`);
   for (const key of [
     "protocolId",
     "variant",
@@ -119,6 +130,26 @@ function validateDevice(device, index) {
   if (device.t56AlgorithmHex && device.t56AlgorithmBase64) {
     throw new Error(`${label} must use only one T56 algorithm encoding`);
   }
+  numberInRange(device.protocolId, `${label}.protocolId`, 0xff);
+  numberInRange(device.readBufferSize, `${label}.readBufferSize`, 0xffff, 1);
+  numberInRange(device.writeBufferSize, `${label}.writeBufferSize`, 0xffff, 1);
+  numberInRange(device.chipIdBytesCount ?? 0, `${label}.chipIdBytesCount`, 4);
+  numberInRange(device.blankValue ?? 0xff, `${label}.blankValue`, 0xff);
+  for (const key of ["variant", "voltagesRaw", "chipInfo", "pinMap", "dataMemorySize", "dataMemory2Size", "pageSize", "pulseDelay", "codeMemorySize", "packageDetailsRaw", "flagsRaw", "chipId"]) {
+    if (device[key] != null) numberInRange(device[key], `${label}.${key}`, 0xffff_ffff);
+  }
+  const idBytes = parseNumber(device.chipIdBytesCount ?? 0, `${label}.chipIdBytesCount`);
+  const chipId = parseNumber(device.chipId ?? 0, `${label}.chipId`);
+  const maxChipId = idBytes === 4 ? 0xffff_ffff : 2 ** (idBytes * 8) - 1;
+  if (chipId > maxChipId) throw new Error(`${label}.chipId does not fit chipIdBytesCount`);
+  if (device.programmers.includes("t56") && parseNumber(device.writeBufferSize, `${label}.writeBufferSize`) > 4096) {
+    throw new Error(`${label}.writeBufferSize exceeds the T56 padded payload limit`);
+  }
+}
+
+function numberInRange(value, label, maximum, minimum = 0) {
+  const parsed = parseNumber(value, label);
+  if (parsed < minimum || parsed > maximum) throw new Error(`${label} must be in the range ${minimum}-${maximum}`);
 }
 
 function requiredString(object, key, label) {

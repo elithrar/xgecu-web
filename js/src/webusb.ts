@@ -20,11 +20,25 @@ const XGECU_VENDOR_ID = 0xa466;
 const XGECU_PRODUCT_ID = 0x0a53;
 const INTERFACE_NUMBER = 0;
 const DEFAULT_CONFIGURATION = 1;
-const claimedDevices = new WeakSet<USBDeviceLike>();
-const activeOperations = new WeakSet<USBDeviceLike>();
+const deviceStates = new WeakMap<USBDeviceLike, DeviceState>();
+
+interface DeviceState {
+  claimed: boolean;
+  lifecycleActive: boolean;
+  openedByLibrary: boolean;
+  operations: number;
+  references: number;
+  sessionEstablished: boolean;
+}
 
 export class WebUSBProgrammerConnection implements ProgrammerConnection {
-  constructor(readonly device: USBDeviceLike) {}
+  private closed = false;
+  private readonly state: DeviceState;
+
+  constructor(readonly device: USBDeviceLike) {
+    this.state = stateFor(device);
+    this.state.references += 1;
+  }
 
   get opened(): boolean {
     return this.device.opened;
@@ -39,26 +53,49 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
   }
 
   get productName(): string | undefined {
-    return this.device.productName;
+    return cleanUsbString(this.device.productName);
   }
 
   get manufacturerName(): string | undefined {
-    return this.device.manufacturerName;
+    return cleanUsbString(this.device.manufacturerName);
   }
 
   get serialNumber(): string | undefined {
-    return this.device.serialNumber;
+    return cleanUsbString(this.device.serialNumber);
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   async close(): Promise<void> {
-    if (!this.device.opened) return;
+    if (this.closed) return;
+    if (this.state.operations !== 0) {
+      throw new XgecuWebUSBError("A ROM operation is still in progress for this programmer.", "OperationInProgress");
+    }
+    if (this.state.lifecycleActive) {
+      throw new XgecuWebUSBError("A USB lifecycle operation is already in progress for this programmer.", "OperationInProgress");
+    }
+    if (this.state.references > 1) {
+      this.state.references -= 1;
+      this.closed = true;
+      return;
+    }
+    this.state.lifecycleActive = true;
     try {
-      if (claimedDevices.has(this.device)) await this.device.releaseInterface?.(INTERFACE_NUMBER);
-    } catch {
-      // Closing is the cleanup path; a stale claimed-interface state should not keep the device open.
+      try {
+        if (this.device.opened && this.state.claimed) await this.device.releaseInterface?.(INTERFACE_NUMBER);
+      } catch {
+        // Closing is the cleanup path; a stale claimed-interface state should not keep the device open.
+      }
+      this.state.claimed = false;
+      if (this.device.opened && this.state.openedByLibrary) await this.device.close();
+      this.state.openedByLibrary = false;
+      this.state.references = 0;
+      this.state.sessionEstablished = false;
+      this.closed = true;
     } finally {
-      claimedDevices.delete(this.device);
-      await this.device.close();
+      this.state.lifecycleActive = false;
     }
   }
 }
@@ -93,7 +130,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
         throw new XgecuWebUSBError("Selected USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
       }
       await openAndClaim(device);
-      return new WebUSBProgrammerConnection(device);
+      return connectionFor(device);
     }));
   }
 
@@ -103,11 +140,14 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
         throw new XgecuWebUSBError("USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
       }
       await openAndClaim(device);
-      return new WebUSBProgrammerConnection(device);
+      return connectionFor(device);
     }));
   }
 
   async readROM(options: ReadROMOptions): Promise<Uint8Array> {
+    validateConnection(options.programmer);
+    validateReadOptions(options);
+    throwIfAborted(options.signal);
     return withProgrammerOperation(options.programmer.device, async () => {
       await ensureReady(options.programmer.device);
       const handle = this.wasm.startReadROM({
@@ -125,6 +165,9 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   }
 
   async writeROM(options: WriteROMOptions): Promise<void> {
+    validateConnection(options.programmer);
+    validateWriteOptions(options);
+    throwIfAborted(options.signal);
     if (options.data.byteLength === 0) throw new XgecuWebUSBError("writeROM data must not be empty.", "InputTooLarge");
     return withProgrammerOperation(options.programmer.device, async () => {
       const device = this.wasm.resolveDevice(options.device, options.programmerKind ?? "auto");
@@ -132,6 +175,12 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       const size = memorySize(device, options.memory ?? "code");
       if (size === 0) throw new XgecuWebUSBError("Selected memory region is empty.", "EmptyMemoryRegion");
       if (options.data.byteLength > size) throw new XgecuWebUSBError("writeROM data is larger than the selected memory region.", "InputTooLarge");
+      if ((options.erase ?? true) && (options.memory ?? "code") !== "code") {
+        throw new XgecuWebUSBError("Erase writes are restricted to full code-memory images because erase scope is device-specific.", "InvalidInput");
+      }
+      if ((options.erase ?? true) && options.data.byteLength !== size) {
+        throw new XgecuWebUSBError("writeROM data must match the selected memory region when erase is enabled.", "InputTooLarge");
+      }
       await ensureReady(options.programmer.device);
       const handle = this.wasm.startWriteROM({
         programmer: options.programmerKind ?? "auto",
@@ -139,8 +188,8 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
         memory: options.memory ?? "code",
         data: options.data,
         erase: options.erase ?? true,
-        eraseNumFuses: clampByte(options.eraseNumFuses ?? 0),
-        erasePld: clampByte(options.erasePld ?? 0),
+        eraseNumFuses: options.eraseNumFuses ?? 0,
+        erasePld: options.erasePld ?? 0,
         verify: options.verify ?? true,
         skipIdCheck: options.skipIdCheck ?? false,
         continueOnIdMismatch: options.continueOnIdMismatch ?? false,
@@ -164,20 +213,27 @@ export async function createProgrammer(options: { wasmUrl?: string | URL; usb?: 
 
 export async function performWebUSBTransfer(device: USBDeviceLike, transfer: UsbTransfer): Promise<Uint8Array | void> {
   if (transfer.direction === "out") {
-    const result = await device.transferOut(transfer.endpoint, toArrayBuffer(transfer.data));
+    let result;
+    try {
+      result = await device.transferOut(transfer.endpoint, toArrayBuffer(transfer.data));
+    } catch (error) {
+      throw new WebUSBTransferError(`USB transferOut(${transfer.endpoint}) failed.`, error);
+    }
     if (result.status !== "ok") throw new WebUSBTransferError(`USB transferOut(${transfer.endpoint}) failed with ${result.status}.`);
-    if (result.bytesWritten != null && result.bytesWritten !== transfer.data.byteLength) {
+    if (result.bytesWritten !== transfer.data.byteLength) {
       throw new WebUSBTransferError(`USB transferOut(${transfer.endpoint}) wrote ${result.bytesWritten} of ${transfer.data.byteLength} bytes.`);
     }
     return;
   }
 
-  const result = await device.transferIn(transfer.endpoint, transfer.length);
+  let result;
+  try {
+    result = await device.transferIn(transfer.endpoint, transfer.length);
+  } catch (error) {
+    throw new WebUSBTransferError(`USB transferIn(${transfer.endpoint}) failed.`, error);
+  }
   if (result.status !== "ok") throw new WebUSBTransferError(`USB transferIn(${transfer.endpoint}) failed with ${result.status}.`);
   if (!result.data) throw new WebUSBTransferError(`USB transferIn(${transfer.endpoint}) returned no data.`);
-  if (result.data.byteLength < transfer.length) {
-    throw new WebUSBTransferError(`USB transferIn(${transfer.endpoint}) returned ${result.data.byteLength} of ${transfer.length} bytes.`);
-  }
   return new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength).slice();
 }
 
@@ -188,16 +244,93 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 async function ensureReady(device: USBDeviceLike): Promise<void> {
-  await openAndClaim(device);
+  await openAndClaim(device, true);
 }
 
-async function openAndClaim(device: USBDeviceLike): Promise<void> {
-  if (!device.opened) await lifecycle("open USB device", () => device.open());
-  if (device.configuration == null) await lifecycle("select USB configuration 1", () => device.selectConfiguration(DEFAULT_CONFIGURATION));
-  if (!claimedDevices.has(device)) {
-    await lifecycle("claim USB interface 0", () => device.claimInterface(INTERFACE_NUMBER));
-    claimedDevices.add(device);
+async function openAndClaim(device: USBDeviceLike, forOperation = false): Promise<void> {
+  const state = stateFor(device);
+  if (state.lifecycleActive || (!forOperation && state.operations !== 0)) {
+    throw new XgecuWebUSBError("A USB lifecycle operation is already in progress for this programmer.", "OperationInProgress");
   }
+  if (forOperation && !device.opened && state.sessionEstablished) {
+    throw new XgecuWebUSBError("The programmer connection was lost. Reconnect before starting another ROM operation.", "WebUSBLifecycleFailed");
+  }
+  state.lifecycleActive = true;
+  let openedHere = false;
+  try {
+    if (!device.opened) {
+      state.claimed = false;
+      await lifecycle("open USB device", () => device.open());
+      state.openedByLibrary = true;
+      openedHere = true;
+    }
+    if (device.configuration?.configurationValue !== DEFAULT_CONFIGURATION) {
+      await lifecycle("select USB configuration 1", () => device.selectConfiguration(DEFAULT_CONFIGURATION));
+      state.claimed = false;
+    }
+    if (!state.claimed) {
+      await lifecycle("claim USB interface 0", () => device.claimInterface(INTERFACE_NUMBER));
+      state.claimed = true;
+    }
+    await ensureEndpointAlternate(device);
+    state.sessionEstablished = true;
+  } catch (error) {
+    if (state.claimed) await device.releaseInterface?.(INTERFACE_NUMBER).catch(() => undefined);
+    state.claimed = false;
+    if (openedHere && device.opened) await device.close().catch(() => undefined);
+    if (openedHere) {
+      state.openedByLibrary = false;
+      state.sessionEstablished = false;
+    }
+    throw error;
+  } finally {
+    state.lifecycleActive = false;
+  }
+}
+
+async function ensureEndpointAlternate(device: USBDeviceLike): Promise<void> {
+  const interfaces = device.configuration?.interfaces;
+  if (!interfaces) return;
+  const usbInterface = interfaces.find((entry) => entry.interfaceNumber === INTERFACE_NUMBER);
+  if (!usbInterface) throw new XgecuWebUSBError("USB configuration 1 does not expose interface 0.", "WebUSBLifecycleFailed");
+  if (hasProgrammerEndpoints(usbInterface.alternate)) return;
+  const alternate = usbInterface.alternates.find(hasProgrammerEndpoints) ??
+    (hasCommandEndpoints(usbInterface.alternate) ? usbInterface.alternate : usbInterface.alternates.find(hasCommandEndpoints));
+  if (!alternate) {
+    throw new XgecuWebUSBError("USB interface 0 does not expose command endpoint 1 in both directions.", "WebUSBLifecycleFailed");
+  }
+  if (alternate === usbInterface.alternate) return;
+  if (!device.selectAlternateInterface) {
+    throw new XgecuWebUSBError("USB interface 0 requires an unsupported alternate setting.", "WebUSBLifecycleFailed");
+  }
+  await lifecycle("select USB interface 0 alternate", () => device.selectAlternateInterface!(INTERFACE_NUMBER, alternate.alternateSetting));
+}
+
+function hasProgrammerEndpoints(alternate: { readonly endpoints: readonly { readonly endpointNumber: number; readonly direction: "in" | "out"; readonly type: string }[] }): boolean {
+  return [1, 2].every((endpointNumber) =>
+    ["in", "out"].every((direction) => alternate.endpoints.some((endpoint) =>
+      endpoint.endpointNumber === endpointNumber && endpoint.direction === direction && endpoint.type === "bulk"
+    ))
+  );
+}
+
+function hasCommandEndpoints(alternate: { readonly endpoints: readonly { readonly endpointNumber: number; readonly direction: "in" | "out"; readonly type: string }[] }): boolean {
+  return ["in", "out"].every((direction) => alternate.endpoints.some((endpoint) =>
+    endpoint.endpointNumber === 1 && endpoint.direction === direction && endpoint.type === "bulk"
+  ));
+}
+
+function connectionFor(device: USBDeviceLike): ProgrammerConnection {
+  return new WebUSBProgrammerConnection(device);
+}
+
+function stateFor(device: USBDeviceLike): DeviceState {
+  let state = deviceStates.get(device);
+  if (!state) {
+    state = { claimed: false, lifecycleActive: false, openedByLibrary: false, operations: 0, references: 0, sessionEstablished: false };
+    deviceStates.set(device, state);
+  }
+  return state;
 }
 
 function requireWebUSB(): USBNavigatorLike {
@@ -211,13 +344,18 @@ function isSupportedUsbId(device: Pick<USBDeviceLike, "vendorId" | "productId">)
 
 function deviceInfo(device: USBDeviceLike): ProgrammerInfo {
   return {
-    productName: device.productName,
-    manufacturerName: device.manufacturerName,
-    serialNumber: device.serialNumber,
+    productName: cleanUsbString(device.productName),
+    manufacturerName: cleanUsbString(device.manufacturerName),
+    serialNumber: cleanUsbString(device.serialNumber),
     vendorId: device.vendorId,
     productId: device.productId,
     opened: device.opened
   };
+}
+
+function cleanUsbString(value: string | undefined): string | undefined {
+  if (value == null) return undefined;
+  return value.split("\0", 1)[0].trim() || undefined;
 }
 
 function memorySize(device: DeviceDetail, memory: NonNullable<WriteROMOptions["memory"]>): number {
@@ -231,24 +369,71 @@ function memorySize(device: DeviceDetail, memory: NonNullable<WriteROMOptions["m
   }
 }
 
-function clampByte(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 0;
-  if (value >= 0xff) return 0xff;
-  return Math.trunc(value);
-}
-
 async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Promise<T>): Promise<T> {
-  if (activeOperations.has(device)) {
+  const state = stateFor(device);
+  if (state.operations !== 0) {
     throw new XgecuWebUSBError("A ROM operation is already in progress for this programmer.", "OperationInProgress");
   }
-  activeOperations.add(device);
+  state.operations += 1;
   try {
     return unwrapInternal(Result.ok(await task()));
   } catch (error) {
     throw unwrapInternal(Result.err(xgecuErrorFromUnknown(error)));
   } finally {
-    activeOperations.delete(device);
+    state.operations -= 1;
   }
+}
+
+function validateConnection(programmer: ProgrammerConnection): void {
+  if (!(programmer instanceof WebUSBProgrammerConnection)) {
+    throw new XgecuWebUSBError("Use WebUSBProgrammerConnection or a connection returned by the programmer API.", "WebUSBLifecycleFailed");
+  }
+  if (!isSupportedUsbId(programmer.device)) {
+    throw new XgecuWebUSBError("USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
+  }
+  if (programmer.isClosed) {
+    throw new XgecuWebUSBError("The programmer connection is closed.", "WebUSBLifecycleFailed");
+  }
+}
+
+function validateReadOptions(options: ReadROMOptions): void {
+  validateEnum(options.programmerKind, ["auto", "t48", "t56"], "programmerKind");
+  validateEnum(options.memory, ["code", "data", "user"], "memory");
+  validateBooleans(options, ["skipIdCheck", "continueOnIdMismatch"]);
+}
+
+function validateWriteOptions(options: WriteROMOptions): void {
+  if (!(options.data instanceof Uint8Array)) invalidInput("data must be a Uint8Array");
+  validateEnum(options.programmerKind, ["auto", "t48", "t56"], "programmerKind");
+  validateEnum(options.memory, ["code", "data", "user"], "memory");
+  validateBooleans(options, ["erase", "verify", "skipIdCheck", "continueOnIdMismatch", "unprotectBefore", "protectAfter"]);
+  validateByte(options.eraseNumFuses, "eraseNumFuses");
+  validateByte(options.erasePld, "erasePld");
+}
+
+function validateEnum(value: unknown, allowed: readonly string[], name: string): void {
+  if (value !== undefined && (typeof value !== "string" || !allowed.includes(value))) invalidInput(`${name} is invalid`);
+}
+
+function validateBooleans(options: object, names: readonly string[]): void {
+  const values = options as Record<string, unknown>;
+  for (const name of names) {
+    if (values[name] !== undefined && typeof values[name] !== "boolean") invalidInput(`${name} must be a boolean`);
+  }
+}
+
+function validateByte(value: unknown, name: string): void {
+  if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 0xff)) {
+    invalidInput(`${name} must be an integer from 0 to 255`);
+  }
+}
+
+function invalidInput(message: string): never {
+  throw new XgecuWebUSBError(message, "InvalidInput");
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new XgecuWebUSBError("Operation aborted.", "OperationAborted");
 }
 
 async function resultFromPromise<T>(task: () => Promise<T>): Promise<BetterResult<T, XgecuWebUSBError>> {

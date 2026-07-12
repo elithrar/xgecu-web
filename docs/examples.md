@@ -4,7 +4,7 @@ These examples are written as browser application code. WebUSB requires a secure
 
 ## 28-pin EEPROM backup and write
 
-This example uses the catalogued `AT28C64B@DIP28` target as a concrete 28-pin EEPROM workflow. Use it as a template for an automotive ECU EEPROM workflow only after confirming the exact chip marking and package on the device. A 28-pin package does not guarantee that the part is an AT28C64B or that the programming voltages/pinout are compatible.
+This example uses the catalogued `AT28C64B@DIP28` target as a concrete 28-pin EEPROM workflow. Use it as a template for an automotive ECU EEPROM workflow only after confirming the exact chip marking, package, orientation, and adapter pinout. A 28-pin package does not guarantee that the part is an AT28C64B or that the programming voltages/pinout are compatible. WebUSB permission identifies only the programmer, not the inserted chip.
 
 ```ts
 import { XgecuWebUSBError, createProgrammer } from "xgecu-web";
@@ -53,6 +53,10 @@ try {
     throw new Error(`Image size mismatch: expected ${original.byteLength} bytes, got ${patched.byteLength}.`);
   }
 
+  if (!window.confirm("Confirm the backup was saved and the chip marking, package, orientation, and adapter are correct.")) {
+    throw new Error("Write cancelled.");
+  }
+
   await api.writeROM({
     programmer,
     device: targetDevice,
@@ -99,6 +103,8 @@ Minimal HTML for the patched image input:
 Keep these checks in your app:
 
 - Match the catalog entry to the chip marking and package before calling `writeROM`.
+- Confirm chip orientation and adapter/pinout; WebUSB permission cannot validate the inserted target.
+- Confirm the downloaded backup was saved before continuing.
 - Keep `verify: true`.
 - Compare the patched image length to the readback length before writing.
 - Do not set `skipIdCheck` unless the catalog lacks an ID for the exact chip and you have another way to confirm the device.
@@ -111,6 +117,7 @@ Apps can reconnect to an already-authorized programmer without showing the choos
 
 ```ts
 const api = await createProgrammer();
+if (!navigator.usb) throw new Error("WebUSB is unavailable.");
 const authorized = await navigator.usb.getDevices();
 const device = authorized.find((item) => item.vendorId === 0xa466 && item.productId === 0x0a53);
 

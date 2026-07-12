@@ -40,6 +40,8 @@ pub const command = struct {
 
 pub const packet = struct {
     pub const system_info_request_len: usize = 5;
+    // T48 returns a 63-byte short packet; byte 62 is the last field used by T48/T56.
+    pub const system_info_response_min_len: usize = 63;
     pub const system_info_response_len: usize = 80;
     pub const short_command_len: usize = 8;
     pub const begin_len: usize = 64;

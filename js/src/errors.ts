@@ -17,6 +17,7 @@ export type XgecuErrorCode =
   | "ProgrammerInBootloader"
   | "OperationAborted"
   | "OperationInProgress"
+  | "InvalidInput"
   | "ShortRead";
 
 export class XgecuWebUSBError extends Error {
