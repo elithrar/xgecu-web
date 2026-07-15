@@ -509,7 +509,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_erase => op.state = .recv_erase,
         .recv_erase => {
-            try checkStatus(op, data);
+            try checkEraseResponse(op, data);
             op.state = .send_end_after_erase;
         },
         .send_end_after_erase => {
@@ -676,6 +676,18 @@ fn checkStatus(op: *Operation, data: []const u8) !void {
     }
     if (data[12] != 0) return error.Overcurrent;
     if (data[0] != 0) return error.ProgrammerStatusError;
+}
+
+fn checkEraseResponse(op: *Operation, data: []const u8) !void {
+    if (op.programmer == .t48 and data.len <= packet.t48_erase_ack_len) {
+        if (data.len < packet.t48_erase_ack_len) {
+            setShortRead(op, data.len, packet.t48_erase_ack_len);
+            return error.ShortRead;
+        }
+        if (data[0] != 0) return error.ProgrammerStatusError;
+        return;
+    }
+    try checkStatus(op, data);
 }
 
 fn checkChipId(op: *Operation, data: []const u8) !void {
@@ -1089,6 +1101,62 @@ test "T48 Wasm erase response status is validated" {
     var status = [_]u8{0} ** 32;
     status[0] = 1;
     try std.testing.expectError(error.ProgrammerStatusError, completeTransfer(&op, &status));
+}
+
+test "T48 Wasm accepts short-packet erase acknowledgement" {
+    var data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_erase,
+        .data = &data,
+    };
+    var response = [_]u8{0} ** packet.t48_erase_ack_len;
+
+    try completeTransfer(&op, &response);
+    try std.testing.expectEqual(State.send_end_after_erase, op.state);
+}
+
+test "T48 Wasm rejects truncated erase acknowledgement" {
+    var data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_erase,
+        .data = &data,
+    };
+    var response = [_]u8{0} ** (packet.t48_erase_ack_len - 1);
+
+    try std.testing.expectError(error.ShortRead, completeTransfer(&op, &response));
+    try std.testing.expectEqual(@as(usize, response.len), op.short_read_actual);
+    try std.testing.expectEqual(@as(usize, packet.t48_erase_ack_len), op.short_read_required);
+}
+
+test "T48 Wasm rejects incomplete extended erase status" {
+    var data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_erase,
+        .data = &data,
+    };
+    var response = [_]u8{0} ** 12;
+
+    try std.testing.expectError(error.ShortRead, completeTransfer(&op, &response));
+    try std.testing.expectEqual(@as(usize, response.len), op.short_read_actual);
+    try std.testing.expectEqual(@as(usize, 13), op.short_read_required);
 }
 
 test "Wasm ShortRead errors report state and required length" {

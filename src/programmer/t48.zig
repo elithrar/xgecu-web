@@ -242,8 +242,8 @@ pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
     try trans.send(&msg);
     var response = [_]u8{0} ** packet.erase_response_len;
     const received = try trans.recv(&response);
-    if (received < 13) return transport.Error.Io;
-    if (response[12] != 0) return Error.Overcurrent;
+    if (received != packet.t48_erase_ack_len and received < 13) return transport.Error.Io;
+    if (received >= 13 and response[12] != 0) return Error.Overcurrent;
     if (response[0] != 0) return Error.ProgrammerStatusError;
 }
 
@@ -392,12 +392,26 @@ test "begin transaction rejects T48 programmer status errors" {
 }
 
 test "T48 status and erase reject truncated responses" {
-    var short = [_]u8{0} ** 12;
-    var fake = transport.FakeTransport.init(std.testing.allocator, &short);
+    var short_status = [_]u8{0} ** 12;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &short_status);
     defer fake.deinit();
 
     try std.testing.expectError(transport.Error.Io, requestStatus(fake.transport()));
+
+    var short_erase = [_]u8{0} ** (packet.t48_erase_ack_len - 1);
+    fake.response = &short_erase;
     try std.testing.expectError(transport.Error.Io, erase(fake.transport(), 0, 0));
+
+    fake.response = &short_status;
+    try std.testing.expectError(transport.Error.Io, erase(fake.transport(), 0, 0));
+}
+
+test "erase accepts T48 short-packet acknowledgement" {
+    var response = [_]u8{0} ** packet.t48_erase_ack_len;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    try erase(fake.transport(), 0, 0);
 }
 
 test "read and write block use T48 commands and payload API" {

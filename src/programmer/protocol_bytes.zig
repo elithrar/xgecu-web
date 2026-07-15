@@ -48,6 +48,7 @@ pub const packet = struct {
     pub const status_len: usize = 32;
     pub const chip_id_len: usize = 32;
     pub const erase_len: usize = 15;
+    pub const t48_erase_ack_len: usize = short_command_len;
     pub const erase_response_len: usize = 64;
     pub const bitstream_header_len: usize = 8;
     pub const jedec_read_len: usize = 32;
