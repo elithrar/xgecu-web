@@ -97,6 +97,8 @@ const Operation = struct {
     error_code: u32 = 0,
     result: []u8 = &.{},
     error_message: []u8 = &.{},
+    short_read_actual: usize = 0,
+    short_read_required: usize = 0,
     continue_on_id_mismatch: bool = false,
     unprotect_before: bool = false,
     protect_after: bool = false,
@@ -459,6 +461,10 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
     switch (op.state) {
         .send_info => op.state = .recv_info,
         .recv_info => {
+            if (data.len < packet.system_info_response_min_len) {
+                setShortRead(op, data.len, packet.system_info_response_min_len);
+                return error.ShortRead;
+            }
             const info = session.parseSystemInfo(data) orelse return error.UnsupportedProgrammer;
             if (info.programmer != .t48 and info.programmer != .t56) return error.UnsupportedProgrammer;
             if (info.status == .bootloader) return error.ProgrammerInBootloader;
@@ -493,7 +499,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_begin_status => op.state = .recv_begin_status,
         .recv_begin_status => {
-            try checkStatus(data);
+            try checkStatus(op, data);
             op.state = if (shouldCheckChipId(op)) .send_chip_id else afterChipIdState(op);
         },
         .send_chip_id => op.state = .recv_chip_id,
@@ -503,7 +509,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_erase => op.state = .recv_erase,
         .recv_erase => {
-            try checkStatus(data);
+            try checkStatus(op, data);
             op.state = .send_end_after_erase;
         },
         .send_end_after_erase => {
@@ -518,20 +524,20 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_second_status => op.state = .recv_second_status,
         .recv_second_status => {
-            try checkStatus(data);
+            try checkStatus(op, data);
             op.state = if (op.unprotect_before) .send_protect_off else .send_write_cmd;
         },
         .send_protect_off => op.state = .send_protect_off_status,
         .send_protect_off_status => op.state = .recv_protect_off_status,
         .recv_protect_off_status => {
-            try checkStatus(data);
+            try checkStatus(op, data);
             op.state = .send_write_cmd;
         },
         .send_write_cmd => op.state = .send_write_payload,
         .send_write_payload => op.state = .send_write_status,
         .send_write_status => op.state = .recv_write_status,
         .recv_write_status => {
-            try checkStatus(data);
+            try checkStatus(op, data);
             op.offset += currentWriteLen(op);
             if (op.offset < op.data.len) {
                 op.state = .send_write_cmd;
@@ -547,35 +553,41 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         .send_protect_on => op.state = .send_protect_on_status,
         .send_protect_on_status => op.state = .recv_protect_on_status,
         .recv_protect_on_status => {
-            try checkStatus(data);
+            try checkStatus(op, data);
             op.state = .send_final_end;
         },
         .send_read_cmd => op.state = .recv_read_payload,
         .recv_read_payload => {
             const len = currentReadLen(op);
             const source = if (op.programmer == .t56) data[0..@min(len, data.len)] else data;
-            if (source.len < len) return error.ShortRead;
+            if (source.len < len) {
+                setShortRead(op, source.len, len);
+                return error.ShortRead;
+            }
             @memcpy(op.data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
             op.state = if (op.programmer == .t48) .send_read_status else if (op.offset < op.data.len) .send_read_cmd else .send_final_end;
         },
         .send_read_status => op.state = .recv_read_status,
         .recv_read_status => {
-            try checkStatus(data);
+            try checkStatus(op, data);
             op.state = if (op.offset < op.data.len) .send_read_cmd else .send_final_end;
         },
         .verify_send_read_cmd => op.state = .verify_recv_read_payload,
         .verify_recv_read_payload => {
             const len = currentReadLen(op);
             const source = if (op.programmer == .t56) data[0..@min(len, data.len)] else data;
-            if (source.len < len) return error.ShortRead;
+            if (source.len < len) {
+                setShortRead(op, source.len, len);
+                return error.ShortRead;
+            }
             @memcpy(op.verify_data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
             op.state = if (op.programmer == .t48) .verify_send_read_status else try afterVerifyReadStatus(op);
         },
         .verify_send_read_status => op.state = .verify_recv_read_status,
         .verify_recv_read_status => {
-            try checkStatus(data);
+            try checkStatus(op, data);
             op.state = try afterVerifyReadStatus(op);
         },
         .send_final_end => {
@@ -657,19 +669,31 @@ fn afterVerifyReadStatus(op: *Operation) !State {
     return error.VerifyFailed;
 }
 
-fn checkStatus(data: []const u8) !void {
-    if (data.len < 13) return error.ShortRead;
+fn checkStatus(op: *Operation, data: []const u8) !void {
+    if (data.len < 13) {
+        setShortRead(op, data.len, 13);
+        return error.ShortRead;
+    }
     if (data[12] != 0) return error.Overcurrent;
     if (data[0] != 0) return error.ProgrammerStatusError;
 }
 
 fn checkChipId(op: *Operation, data: []const u8) !void {
-    if (data.len < 2 + op.device.chip_id_bytes_count) return error.ShortRead;
+    const required = 2 + op.device.chip_id_bytes_count;
+    if (data.len < required) {
+        setShortRead(op, data.len, required);
+        return error.ShortRead;
+    }
     const id_type = data[0];
     const id_len = @min(op.device.chip_id_bytes_count, 4);
     const byte_order: endian.Endian = if (id_type == 3 or id_type == 4) .little else .big;
     const actual: u32 = if (id_len == 0) 0 else @intCast(endian.loadInt(data[2 .. 2 + id_len], byte_order));
     if (actual != op.device.chip_id and !op.continue_on_id_mismatch) return error.ChipIdMismatch;
+}
+
+fn setShortRead(op: *Operation, actual: usize, required: usize) void {
+    op.short_read_actual = actual;
+    op.short_read_required = required;
 }
 
 fn programmerFromAbi(value: u32) !model.Programmer {
@@ -808,7 +832,14 @@ fn setOperationError(op: *Operation, err: anyerror) void {
     clearOperationError(op);
     clearOperationResult(op);
     op.error_code = errorCode(err);
-    op.error_message = allocator().dupe(u8, @errorName(err)) catch &.{};
+    op.error_message = if (err == error.ShortRead and op.short_read_required > 0)
+        std.fmt.allocPrint(
+            allocator(),
+            "ShortRead in {s}: received {d} of {d} required bytes",
+            .{ @tagName(op.state), op.short_read_actual, op.short_read_required },
+        ) catch &.{}
+    else
+        allocator().dupe(u8, @errorName(err)) catch &.{};
 }
 
 fn clearOperationError(op: *Operation) void {
@@ -982,6 +1013,27 @@ test "Wasm system info probe requests the full response buffer" {
     try expectNextTransfer(&op, .in, endpoints.command, packet.system_info_response_len);
 }
 
+test "Wasm system info ShortRead reports the protocol minimum" {
+    var op = Operation{
+        .kind = .read,
+        .requested_programmer = .auto,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_info,
+    };
+    var short = [_]u8{0} ** (packet.system_info_response_min_len - 1);
+
+    try std.testing.expectError(error.ShortRead, completeTransfer(&op, &short));
+    setOperationError(&op, error.ShortRead);
+    defer clearOperationError(&op);
+
+    try std.testing.expectEqualStrings(
+        "ShortRead in recv_info: received 62 of 63 required bytes",
+        op.error_message,
+    );
+}
+
 test "Wasm rejects partial data before an erase transaction" {
     var data = [_]u8{0xaa};
     var op = Operation{
@@ -1037,6 +1089,33 @@ test "T48 Wasm erase response status is validated" {
     var status = [_]u8{0} ** 32;
     status[0] = 1;
     try std.testing.expectError(error.ProgrammerStatusError, completeTransfer(&op, &status));
+}
+
+test "Wasm ShortRead errors report state and required length" {
+    var data = [_]u8{0xaa} ** 4;
+    var verify_data = [_]u8{0} ** 4;
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .verify_recv_read_payload,
+        .data = &data,
+        .verify_data = &verify_data,
+        .verify = true,
+    };
+
+    try std.testing.expectError(error.ShortRead, completeTransfer(&op, &.{0xaa}));
+    setOperationError(&op, error.ShortRead);
+    defer clearOperationError(&op);
+
+    try std.testing.expectEqual(@as(u32, 24), op.error_code);
+    try std.testing.expectEqualStrings(
+        "ShortRead in verify_recv_read_payload: received 1 of 4 required bytes",
+        op.error_message,
+    );
 }
 
 test "Wasm protection runs after verification and checks status" {
