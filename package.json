@@ -21,7 +21,7 @@
     "demo:build": "pnpm --filter @xgecu/react-rom-demo build",
     "demo:typecheck": "pnpm --filter @xgecu/react-rom-demo exec tsc --noEmit -p tsconfig.json",
     "demo:preview": "pnpm --filter @xgecu/react-rom-demo preview",
-    "ci": "pnpm run check:catalog && pnpm run build:zig && pnpm run test && pnpm run typecheck && pnpm run build && pnpm run demo:typecheck && pnpm run demo:build"
+    "ci": "pnpm run check:catalog && pnpm run build:zig && pnpm run test && pnpm run typecheck && pnpm run build && git diff --exit-code -- dist && pnpm run demo:typecheck && pnpm run demo:build"
   },
   "exports": {
     ".": {
@@ -34,7 +34,8 @@
     "dist",
     "docs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "attributions.md"
   ],
   "dependencies": {
     "better-result": "^2.9.2"
