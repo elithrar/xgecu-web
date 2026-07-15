@@ -47,6 +47,7 @@ pub fn list(allocator: std.mem.Allocator, query: ?[]const u8, programmer: model.
             .chip_id = device.chip_id,
             .chip_id_bytes_count = device.chip_id_bytes_count,
             .blank_value = device.blank_value,
+            .can_erase = device.can_erase,
             .supports_t48 = device.supports(.t48),
             .supports_t56 = device.supports(.t56),
         });
@@ -73,19 +74,29 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-test "find resolves aliases and programmer support" {
+test "find resolves sourced T48 descriptors and programmer support" {
     const device = try find("at28c64b", .t48);
     try std.testing.expectEqualStrings("AT28C64B@DIP28", device.canonical_name);
+    try std.testing.expectEqual(@as(u8, 0x07), device.protocol_id);
+    try std.testing.expectEqual(@as(u32, 0x4126), device.variant);
+    try std.testing.expectEqual(@as(u32, 0x0200), device.voltages_raw);
+    try std.testing.expectEqual(@as(u32, 0x13), device.pin_map);
+    try std.testing.expectEqual(@as(u32, 0xc010), device.flags_raw);
+    try std.testing.expect(device.can_erase);
     try std.testing.expect(!device.supports(.t56));
     try std.testing.expectError(Error.DeviceNotFound, find("missing", .t48));
     try std.testing.expectError(Error.DeviceNotFound, find("at28c64b", .t56));
 }
 
-test "list filters by query" {
-    const found = try list(std.testing.allocator, "w25", .t48, 10);
+test "list exposes UV EPROM erase and ID metadata" {
+    const found = try list(std.testing.allocator, "m27c64a", .t48, 10);
     defer std.testing.allocator.free(found);
     try std.testing.expectEqual(@as(usize, 1), found.len);
-    try std.testing.expectEqualStrings("W25Q32JV@SOIC8", found[0].name);
+    try std.testing.expectEqualStrings("M27C64A@DIP28", found[0].name);
+    try std.testing.expectEqual(@as(u32, 0x9b08), found[0].chip_id);
+    try std.testing.expectEqual(@as(u8, 2), found[0].chip_id_bytes_count);
+    try std.testing.expect(!found[0].can_erase);
     try std.testing.expect(found[0].supports_t48);
     try std.testing.expect(!found[0].supports_t56);
+    try std.testing.expectError(Error.DeviceNotFound, find("27C64", .t48));
 }

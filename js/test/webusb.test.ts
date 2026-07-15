@@ -308,6 +308,27 @@ describe("BrowserXgecuWebUSB", () => {
     expect(startWriteROM).not.toHaveBeenCalled();
   });
 
+  it("rejects electrical erase for externally erased targets", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "resolveDevice").mockReturnValue({
+      ...fakeDeviceSummary(),
+      name: "M27C64A@DIP28",
+      aliases: ["M27C64A"],
+      canErase: false
+    });
+    const startWriteROM = vi.spyOn(wasm, "startWriteROM");
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+    const data = new Uint8Array(8192).fill(0xff);
+
+    await expect(api.writeROM({ programmer, device: "M27C64A@DIP28", data })).rejects.toMatchObject({ code: "InvalidInput" });
+    expect(startWriteROM).not.toHaveBeenCalled();
+
+    await api.writeROM({ programmer, device: "M27C64A@DIP28", data, erase: false });
+    expect(startWriteROM).toHaveBeenCalledWith(expect.objectContaining({ erase: false }));
+  });
+
   it("rejects erase writes outside code memory", async () => {
     const device = new FakeDevice();
     const wasm = fakeWasm();
@@ -456,6 +477,7 @@ function fakeDeviceSummary() {
     chipId: 0,
     chipIdBytesCount: 0,
     blankValue: 0xff,
+    canErase: true,
     supportsT48: true,
     supportsT56: false
   } as const;

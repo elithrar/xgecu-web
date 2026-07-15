@@ -105,10 +105,14 @@ function App() {
     [devices]
   );
   const selectedSummary = useMemo(() => devices.find((device) => device.name === selectedDevice) ?? null, [devices, selectedDevice]);
+  const backupIsBlank = Boolean(
+    backup && selectedSummary && backup.data.every((byte) => byte === selectedSummary.blankValue)
+  );
   const canWrite = Boolean(
     api && programmer && writeImage && backup && !busy &&
     backup.target === selectedDevice && backup.connectionId === connectionSequence.current &&
-    writeImage.byteLength === backup.data.byteLength && confirmWrite
+    writeImage.byteLength === backup.data.byteLength &&
+    (selectedSummary?.canErase || backupIsBlank) && confirmWrite
   );
 
   useEffect(() => {
@@ -239,7 +243,7 @@ function App() {
   }
 
   async function writeRom() {
-    if (!api || !programmer || !writeImage || !backup || !confirmWrite || activeToken.current) return;
+    if (!api || !programmer || !writeImage || !backup || !selectedSummary || !confirmWrite || activeToken.current) return;
     if (backup.target !== selectedDevice || backup.connectionId !== connectionSequence.current) return;
     if (writeImage.byteLength !== backup.data.byteLength) {
       setStatus(`Image size mismatch: expected ${backup.data.byteLength} bytes, got ${writeImage.byteLength}.`);
@@ -259,7 +263,7 @@ function App() {
       target_device: selectedDevice,
       memory: "code",
       image_bytes: writeImage.byteLength,
-      erase: true,
+      erase: selectedSummary.canErase,
       verify: true,
       skip_id_check: skipIdCheck,
       programmer: programmerFields(programmer)
@@ -269,7 +273,7 @@ function App() {
         programmer,
         device: selectedDevice,
         data: writeImage,
-        erase: true,
+        erase: selectedSummary.canErase,
         verify: true,
         skipIdCheck,
         signal: controller.signal,
@@ -380,7 +384,8 @@ function App() {
           {selectedSummary ? (
             <Text variant="secondary">
               {selectedSummary.packagePins} pins, {selectedSummary.codeMemorySize} code bytes, page size {selectedSummary.pageSize}
-              {selectedSummary.chipIdBytesCount ? `, chip ID 0x${selectedSummary.chipId.toString(16)}` : ", no catalogued chip ID"}.
+              {selectedSummary.chipIdBytesCount ? `, chip ID 0x${selectedSummary.chipId.toString(16)}` : ", no catalogued chip ID"},
+              {selectedSummary.canErase ? " electrical erase supported" : " external erase required"}.
             </Text>
           ) : (
             <Banner variant="error" title="Selected device is not in the current search results" />
@@ -445,8 +450,15 @@ function App() {
             />
           ) : null}
           {!backup ? <Text variant="secondary">Read and download a backup before writing is enabled.</Text> : null}
+          {backup && selectedSummary && !selectedSummary.canErase && !backupIsBlank ? (
+            <Banner
+              variant="error"
+              title="UV EPROM is not blank"
+              description={`Externally erase the chip, then read it again until every byte is 0x${selectedSummary.blankValue.toString(16).padStart(2, "0")}.`}
+            />
+          ) : null}
           <Button variant="destructive" disabled={!canWrite} onClick={() => void writeRom()}>
-            Write ROM with erase + verify
+            Write ROM with {selectedSummary?.canErase ? "erase + " : ""}verify
           </Button>
         </LayerCard.Primary>
       </LayerCard>

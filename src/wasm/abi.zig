@@ -184,6 +184,7 @@ export fn mp_device_detail(name_ptr: u32, name_len: u32, programmer_value: u32) 
         .chip_id = device.chip_id,
         .chip_id_bytes_count = device.chip_id_bytes_count,
         .blank_value = device.blank_value,
+        .can_erase = device.can_erase,
         .supports_t48 = device.supports(.t48),
         .supports_t56 = device.supports(.t56),
     };
@@ -226,6 +227,7 @@ export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len:
     if (data_len > size) return failStart("InputTooLarge");
     if (erase != 0 and memory != .code) return failStart("InputTooLarge");
     if (erase != 0 and data_len != size) return failStart("InputTooLarge");
+    if (erase != 0 and !device.can_erase) return failStart("EraseUnsupported");
     const data = allocator().dupe(u8, sliceConst(data_ptr, data_len)) catch return failStart("out of memory");
     const op = allocator().create(Operation) catch {
         allocator().free(data);
@@ -474,6 +476,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 if (op.data.len > size) return error.InputTooLarge;
                 if (op.erase and op.memory != .code) return error.InputTooLarge;
                 if (op.erase and op.data.len != size) return error.InputTooLarge;
+                if (op.erase and !op.device.can_erase) return error.EraseUnsupported;
                 if (op.verify) op.verify_data = try allocator().alloc(u8, op.data.len);
                 if (info.programmer == .t56) {
                     if (op.descriptor.write_buffer_size > packet.t56_padded_write_payload_max) return error.PayloadBufferTooSmall;
@@ -732,7 +735,7 @@ fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void
     try writer.writeAll(",\"chipType\":");
     try writeJsonString(writer, chipTypeName(summary.chip_type));
     try writer.print(
-        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"supportsT48\":{},\"supportsT56\":{}}}",
+        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"canErase\":{},\"supportsT48\":{},\"supportsT56\":{}}}",
         .{
             summary.code_memory_size,
             summary.data_memory_size,
@@ -742,6 +745,7 @@ fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void
             summary.chip_id,
             summary.chip_id_bytes_count,
             summary.blank_value,
+            summary.can_erase,
             summary.supports_t48,
             summary.supports_t56,
         },
@@ -995,6 +999,26 @@ test "Wasm rejects partial data before an erase transaction" {
     info[6] = 7;
 
     try std.testing.expectError(error.InputTooLarge, completeTransfer(&op, &info));
+    try std.testing.expectEqual(State.recv_info, op.state);
+}
+
+test "Wasm rejects electrical erase for UV EPROM after programmer detection" {
+    var data = [_]u8{0xff} ** 8192;
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .device = catalog.devices[1],
+        .descriptor = catalog.devices[1].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_info,
+        .data = &data,
+        .erase = true,
+    };
+    var info = [_]u8{0} ** packet.system_info_response_min_len;
+    info[4] = 1;
+    info[6] = 7;
+
+    try std.testing.expectError(error.EraseUnsupported, completeTransfer(&op, &info));
     try std.testing.expectEqual(State.recv_info, op.state);
 }
 

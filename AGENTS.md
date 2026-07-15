@@ -91,7 +91,7 @@ The workflow uses Zig 0.16.0. If Zig is not on `PATH` in an agent environment, i
   - `erase`: `true`
   - `verify`: `true`
   - `skipIdCheck`: `false`
-- Do not show write examples without a prior read/backup, image length check, explicit `erase: true`, and `verify: true`.
+- Do not show write examples without a prior read/backup, image length check, an explicit `erase` choice consistent with `canErase`, and `verify: true`.
 - Always close `ProgrammerConnection` in examples with `try`/`finally`.
 - Keep examples browser-compatible and TypeScript-first.
 
