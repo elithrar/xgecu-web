@@ -102,12 +102,15 @@ The workflow uses Zig 0.16.0. If Zig is not on `PATH` in an agent environment, i
 - Validate buffer sizes before sending USB command bytes.
 - Keep T56 read sizes capped to the protocol payload window.
 - Preserve operation cleanup: Wasm operation handles must be destroyed on success and failure.
+- Keep Wasm operation handles single-use; dispose operations that are started but never run.
 - Prefer explicit error propagation and targeted error sets over broad catch-all behavior.
 - Use `defer`/`errdefer` immediately after allocations or partial initialization.
 
 ## Hardware safety guardrails
 
 - Never weaken ID checks, erase/verify defaults, or size validation without explicit tests and docs.
+- Non-electrically-erasable writes must blank-check the full selected memory region immediately before programming.
+- Treat protection flags as capabilities; do not infer prior state or automatically re-protect after a write.
 - Treat overcurrent and programmer status errors as hard failures.
 - Do not make examples encourage repeated writes or unattended write loops.
 - Browser permission means access to the programmer only; examples must still tell users to confirm chip marking, orientation, package, and adapter.

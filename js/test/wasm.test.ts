@@ -54,7 +54,8 @@ describe("WasmBridge", () => {
     const bridge = new WasmBridge(fake);
     const seen: UsbTransfer[] = [];
 
-    const result = await bridge.runOperation(123, async (transfer) => {
+    const handle = startTestRead(bridge);
+    const result = await bridge.runOperation(handle, async (transfer) => {
       seen.push(transfer);
       if (transfer.direction === "in") return new Uint8Array([1, 2, 3]);
       return;
@@ -66,7 +67,7 @@ describe("WasmBridge", () => {
     ]);
     expect(fake.completedIn).toEqual(new Uint8Array([1, 2, 3]));
     expect(result).toEqual(new Uint8Array([0x42]));
-    expect(fake.mp_operation_destroy).toHaveBeenCalledWith(123);
+    expect(fake.mp_operation_destroy).toHaveBeenCalledWith(1);
   });
 
   it("emits progress only when the public progress values change", async () => {
@@ -81,8 +82,9 @@ describe("WasmBridge", () => {
     fake.mp_operation_total = vi.fn(() => 8192);
     const onProgress = vi.fn();
 
-    await new WasmBridge(fake).runOperation(
-      123,
+    const bridge = new WasmBridge(fake);
+    await bridge.runOperation(
+      startTestRead(bridge),
       async (transfer) => transfer.direction === "in" ? new Uint8Array([1]) : undefined,
       { onProgress }
     );
@@ -98,8 +100,8 @@ describe("WasmBridge", () => {
     fake.sequence = [3];
     const bridge = new WasmBridge(fake);
 
-    await expect(bridge.runOperation(9, async () => undefined)).rejects.toThrow(XgecuWebUSBError);
-    expect(fake.mp_operation_destroy).toHaveBeenCalledWith(9);
+    await expect(bridge.runOperation(startTestRead(bridge), async () => undefined)).rejects.toThrow(XgecuWebUSBError);
+    expect(fake.mp_operation_destroy).toHaveBeenCalledWith(1);
   });
 
   it("aborts and drains cleanup when a progress callback throws", async () => {
@@ -108,15 +110,75 @@ describe("WasmBridge", () => {
     const bridge = new WasmBridge(fake);
     const transfers: UsbTransfer[] = [];
 
-    await expect(bridge.runOperation(123, async (transfer) => {
+    await expect(bridge.runOperation(startTestRead(bridge), async (transfer) => {
       transfers.push(transfer);
     }, { onProgress: () => { throw new Error("progress failed"); } })).rejects.toThrow("progress failed");
 
-    expect(fake.mp_operation_abort).toHaveBeenCalledWith(123);
+    expect(fake.mp_operation_abort).toHaveBeenCalledWith(1);
     expect(transfers).toHaveLength(2);
-    expect(fake.mp_operation_destroy).toHaveBeenCalledWith(123);
+    expect(fake.mp_operation_destroy).toHaveBeenCalledWith(1);
+  });
+
+  it("awaits asynchronous progress callbacks", async () => {
+    const fake = fakeExports();
+    fake.sequence = [1, 0];
+    const bridge = new WasmBridge(fake);
+    const completed: string[] = [];
+
+    await bridge.runOperation(startTestRead(bridge), async () => undefined, {
+      onProgress: async () => {
+        await Promise.resolve();
+        completed.push("progress");
+      }
+    });
+
+    expect(completed).toEqual(["progress"]);
+  });
+
+  it("rejects duplicate runners and disposes unstarted operations once", async () => {
+    const fake = fakeExports();
+    fake.sequence = [1, 0];
+    const bridge = new WasmBridge(fake);
+    let release!: () => void;
+    const handle = startTestRead(bridge);
+    const first = bridge.runOperation(handle, () => new Promise<void>((resolve) => { release = resolve; }));
+
+    await expect(bridge.runOperation(handle, async () => undefined)).rejects.toMatchObject({ code: "OperationInProgress" });
+    expect(() => bridge.disposeOperation(handle)).toThrow("currently running");
+    release();
+    await first;
+    await expect(bridge.runOperation(handle, async () => undefined)).rejects.toMatchObject({ code: "InvalidInput" });
+
+    const unused = startTestRead(bridge);
+    bridge.disposeOperation(unused);
+    bridge.disposeOperation(unused);
+    expect(fake.mp_operation_destroy).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports cleanup failure when the abort transaction cannot be drained", async () => {
+    const fake = fakeExports();
+    fake.sequence = [1, 1];
+    const bridge = new WasmBridge(fake);
+    const onCleanupFailure = vi.fn();
+
+    await expect(bridge.runOperation(startTestRead(bridge), async () => {
+      throw new Error("USB disconnected");
+    }, { onCleanupFailure })).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+
+    expect(onCleanupFailure).toHaveBeenCalledOnce();
+    expect(fake.mp_operation_destroy).toHaveBeenCalledWith(1);
   });
 });
+
+function startTestRead(bridge: WasmBridge) {
+  return bridge.startReadROM({
+    programmer: "t48",
+    device: "AT28C64B",
+    memory: "code",
+    skipIdCheck: false,
+    continueOnIdMismatch: false
+  });
+}
 
 type MutableWasmExports = WasmExports & {
   completedIn: Uint8Array;

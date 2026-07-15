@@ -27,6 +27,8 @@ interface DeviceSummary {
   chipIdBytesCount: number;
   blankValue: number;
   canErase: boolean;
+  supportsUnprotect: boolean;
+  supportsProtect: boolean;
   supportsT48: boolean;
   supportsT56: boolean;
 }
@@ -67,7 +69,7 @@ try {
 }
 ```
 
-Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `AlgorithmUnavailable`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
+Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `TargetNotBlank`, `AlgorithmUnavailable`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
 
 ## `createProgrammer(options?)`
 
@@ -145,6 +147,7 @@ Resolves a canonical name or alias through the embedded catalog and returns full
 const target = api.resolveDevice("AT28C64B", "t48");
 if (!target) throw new Error("Target is not in the catalog.");
 console.log(target.canErase); // Programmer-issued electrical erase support.
+console.log(target.supportsUnprotect, target.supportsProtect);
 ```
 
 ## `requestProgrammer()`
@@ -182,7 +185,7 @@ const data = await api.readROM({
 The returned `Uint8Array` length is the catalogued memory size for the selected memory region.
 Leave `skipIdCheck` at its default `false` unless you have an independent target-identification step.
 Pass an `AbortSignal` as `signal` to cancel before the next USB transfer.
-Progress callbacks are emitted when the public phase, offset, or total changes; internal USB transfers that leave all three values unchanged do not produce duplicate events.
+Progress callbacks are emitted when the public phase, offset, or total changes; internal USB transfers that leave all three values unchanged do not produce duplicate events. Async callbacks are awaited, and a rejected callback aborts the operation.
 
 ## `writeROM(options)`
 
@@ -191,6 +194,8 @@ Always read and save a backup before writing, and compare the image length to th
 
 ```ts
 const abortController = new AbortController();
+const target = api.resolveDevice("AT28C64B@DIP28", "t48");
+if (!target) throw new Error("Target is not in the catalog.");
 const fileInput = document.querySelector<HTMLInputElement>("#rom-image")!;
 const selectedImage = fileInput.files?.[0];
 if (!selectedImage) throw new Error("Choose an image first.");
@@ -224,7 +229,7 @@ await api.writeROM({
   data,
   memory: "code",
   programmerKind: "t48",
-  erase: true,
+  erase: target.canErase,
   eraseNumFuses: 0,
   erasePld: 0,
   verify: true,
@@ -238,11 +243,11 @@ await api.writeROM({
 ```
 
 `erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`.
-`DeviceSummary.canErase` reports whether the programmer can electrically erase the target. `writeROM` rejects erase requests when it is false. A UV EPROM must be externally erased, read back as entirely `blankValue`, and written with `erase: false`.
+`DeviceSummary.canErase` reports whether the programmer can electrically erase the target. `writeROM` rejects erase requests when it is false. A UV EPROM must be externally erased and written with `erase: false`; immediately before programming, the operation reads the full selected memory region and throws `TargetNotBlank` unless every byte equals `blankValue`.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 `eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
 Hardware-affecting options are runtime-validated. Unknown enum values, non-boolean flags, and fuse/PLD values outside the integer range 0-255 throw `InvalidInput` before USB work begins.
-Protected flash workflows can opt into `unprotectBefore` and `protectAfter` when the chip and catalog flags require it.
+`DeviceSummary.supportsUnprotect` and `DeviceSummary.supportsProtect` report capabilities, not required policy. Keep both write options explicit because changing protection is hardware-affecting; do not infer prior state or automatically re-protect a chip after writing.
 Only one ROM operation may be active per physical programmer; overlapping calls and connection closes throw `OperationInProgress`.
 
 For a complete backup-then-write browser flow, including image length checks, see `docs/examples.md`.
@@ -256,4 +261,4 @@ Most applications should use `createProgrammer()`. The package also exports:
 - `performWebUSBTransfer()` for mapping a Wasm transfer request to `USBDevice.transferOut()`/`transferIn()`.
 - Error classes: `XgecuWebUSBError`, `WebUSBUnavailableError`, and `WebUSBTransferError`.
 
-`WasmBridge.runOperation()` always destroys the Wasm operation handle in a `finally` block. If a transfer fails, the high-level API surfaces either a `WebUSBTransferError` or an `XgecuWebUSBError` with the Wasm error text.
+Wasm operation handles are single-use. `WasmBridge.runOperation()` rejects duplicate runners and always destroys its handle in a `finally` block. Call `disposeOperation()` for an operation that was started but will not be run. If transaction cleanup fails after an operation error, the high-level API closes and quarantines the programmer until an explicit reconnect.

@@ -67,6 +67,8 @@ pub const DeviceSummary = struct {
     chip_id_bytes_count: u8,
     blank_value: u8,
     can_erase: bool,
+    supports_unprotect: bool,
+    supports_protect: bool,
     supports_t48: bool,
     supports_t56: bool,
 };

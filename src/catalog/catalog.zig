@@ -35,6 +35,7 @@ pub fn list(allocator: std.mem.Allocator, query: ?[]const u8, programmer: model.
             if (!matchesQuery(device, needle)) continue;
         }
         const package = model.decodePackageDetails(device.package_details_raw);
+        const flags = model.decodeFlags(device.flags_raw, device.voltages_raw, device.chip_info, device.protocol_id);
         try out.append(allocator, .{
             .name = device.canonical_name,
             .aliases = device.aliases,
@@ -48,6 +49,8 @@ pub fn list(allocator: std.mem.Allocator, query: ?[]const u8, programmer: model.
             .chip_id_bytes_count = device.chip_id_bytes_count,
             .blank_value = device.blank_value,
             .can_erase = device.can_erase,
+            .supports_unprotect = flags.off_protect_before,
+            .supports_protect = flags.protect_after,
             .supports_t48 = device.supports(.t48),
             .supports_t56 = device.supports(.t56),
         });
@@ -96,6 +99,8 @@ test "list exposes UV EPROM erase and ID metadata" {
     try std.testing.expectEqual(@as(u32, 0x9b08), found[0].chip_id);
     try std.testing.expectEqual(@as(u8, 2), found[0].chip_id_bytes_count);
     try std.testing.expect(!found[0].can_erase);
+    try std.testing.expect(!found[0].supports_unprotect);
+    try std.testing.expect(!found[0].supports_protect);
     try std.testing.expect(found[0].supports_t48);
     try std.testing.expect(!found[0].supports_t56);
     try std.testing.expectError(Error.DeviceNotFound, find("27C64", .t48));

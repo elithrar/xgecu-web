@@ -20,6 +20,7 @@ Endpoint mapping:
 | Payload out | `transferOut(2, bytes)` for T48 payloads |
 | Payload in | `transferIn(2, length)` for T48 payloads |
 
+T48 write commands retain the logical byte count but endpoint 2 payloads are padded to the catalogued write-buffer size. T48 reads shorter than 64 bytes request a 64-byte USB frame and consume only the logical byte count, matching minipro and T48 firmware behavior.
 T56 block reads and writes use endpoint 1 according to the current protocol implementation. T56 reads are capped to the protocol payload window before the extra status trailer is requested.
 When WebUSB descriptors are available, connection setup verifies that interface 0 exposes command endpoint 1 in both directions and prefers an alternate setting that also exposes T48 payload endpoint 2.
 
@@ -62,4 +63,4 @@ Most browser apps should call `api.readROM()` and `api.writeROM()` instead of us
 
 `performWebUSBTransfer()` validates WebUSB transfer statuses and exact OUT byte counts. Successful short IN packets are passed to Wasm because WebUSB's requested IN length is a maximum; the protocol state machine validates the minimum bytes required for each response. Programmer names, manufacturer names, and serial numbers are trimmed at the first NUL from USB string descriptors. `WebUSBProgrammerConnection.close()` releases interface 0 and closes devices opened by this API after all shared connection references are closed.
 High-level browser APIs serialize ROM operations per physical programmer and throw package-owned `XgecuWebUSBError` objects for expected failures.
-Wasm operations send a final `end_transaction` transfer on normal completion and attempt a best-effort `end_transaction` during abort or transfer failure cleanup.
+Wasm operations send a final `end_transaction` transfer on normal completion and attempt an `end_transaction` during abort or transfer failure cleanup. A failed cleanup quarantines the high-level connection and requires an explicit reconnect. Each low-level Wasm operation handle can be run once; dispose an unstarted handle with `disposeOperation()`.

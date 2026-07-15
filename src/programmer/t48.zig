@@ -10,7 +10,7 @@ const transport = @import("transport.zig");
 const command = protocol_bytes.command;
 const packet = protocol_bytes.packet;
 
-pub const Error = transport.Error || logic.Error || error{
+pub const Error = transport.Error || logic.Error || std.mem.Allocator.Error || error{
     UnknownMemoryKind,
     Overcurrent,
     ProgrammerStatusError,
@@ -143,18 +143,29 @@ pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u3
     endian.storeInt(msg[2..4], out.len, .little);
     endian.storeInt(msg[4..8], address, .little);
     try trans.send(&msg);
-    try trans.readPayload(out, 0);
+    if (out.len < packet.t48_min_read_payload_len) {
+        var frame: [packet.t48_min_read_payload_len]u8 = undefined;
+        try trans.readPayload(&frame, 0);
+        @memcpy(out, frame[0..out.len]);
+    } else {
+        try trans.readPayload(out, 0);
+    }
 }
 
-pub fn writeBlock(trans: transport.Transport, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
+pub fn writeBlock(allocator: std.mem.Allocator, trans: transport.Transport, device: Device, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
     if (data.len > std.math.maxInt(u16) or !validAddressRange(address, data.len)) return transport.Error.Io;
 
     var msg = [_]u8{0} ** packet.short_command_len;
     msg[0] = writeCommand(kind);
     endian.storeInt(msg[2..4], data.len, .little);
     endian.storeInt(msg[4..8], address, .little);
+    const payload_len = @max(@as(usize, device.write_buffer_size), data.len);
+    const payload = try allocator.alloc(u8, payload_len);
+    defer allocator.free(payload);
+    @memset(payload, 0);
+    @memcpy(payload[0..data.len], data);
     try trans.send(&msg);
-    try trans.writePayload(data, 0);
+    try trans.writePayload(payload, 0);
 }
 
 pub fn readFuses(trans: transport.Transport, device: Device, kind: FuseKind, items_count: u8, out: []u8) Error!void {
@@ -242,6 +253,8 @@ pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
     try trans.send(&msg);
     var response = [_]u8{0} ** packet.erase_response_len;
     const received = try trans.recv(&response);
+    // T48 returns an opaque short acknowledgement; status is checked after restart.
+    if (received == packet.t48_erase_ack_len) return;
     if (received < 13) return transport.Error.Io;
     if (response[12] != 0) return Error.Overcurrent;
     if (response[0] != 0) return Error.ProgrammerStatusError;
@@ -392,30 +405,50 @@ test "begin transaction rejects T48 programmer status errors" {
 }
 
 test "T48 status and erase reject truncated responses" {
-    var short = [_]u8{0} ** 12;
-    var fake = transport.FakeTransport.init(std.testing.allocator, &short);
+    var short_status = [_]u8{0} ** 12;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &short_status);
     defer fake.deinit();
 
     try std.testing.expectError(transport.Error.Io, requestStatus(fake.transport()));
+
+    var short_erase = [_]u8{0} ** (packet.t48_erase_ack_len - 1);
+    fake.response = &short_erase;
     try std.testing.expectError(transport.Error.Io, erase(fake.transport(), 0, 0));
+
+    fake.response = &short_status;
+    try std.testing.expectError(transport.Error.Io, erase(fake.transport(), 0, 0));
+}
+
+test "erase accepts T48 short-packet acknowledgement" {
+    var response = [_]u8{0} ** packet.t48_erase_ack_len;
+    response[0] = command.erase;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    try erase(fake.transport(), 0, 0);
 }
 
 test "read and write block use T48 commands and payload API" {
     var response = [_]u8{0} ** 32;
-    var payload = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
+    var payload = [_]u8{0} ** packet.t48_min_read_payload_len;
+    const expected = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
+    @memcpy(payload[0..expected.len], &expected);
     var fake = transport.FakeTransport.init(std.testing.allocator, &response);
     fake.payload_response = &payload;
     defer fake.deinit();
 
     var out = [_]u8{0} ** 4;
     try readBlock(fake.transport(), .code, 0x1234, &out);
-    try std.testing.expectEqualSlices(u8, &payload, &out);
+    try std.testing.expectEqualSlices(u8, &expected, &out);
     try std.testing.expectEqual(@as(u8, command.read_code), fake.sent.items[0]);
     try std.testing.expectEqual(@as(u64, 4), endian.loadInt(fake.sent.items[2..4], .little));
     try std.testing.expectEqual(@as(u64, 0x1234), endian.loadInt(fake.sent.items[4..8], .little));
 
-    try writeBlock(fake.transport(), .data, 0x20, &payload);
-    try std.testing.expectEqualSlices(u8, &payload, fake.payload_sent.items);
+    var device = testDevice();
+    device.write_buffer_size = 8;
+    try writeBlock(std.testing.allocator, fake.transport(), device, .data, 0x20, &expected);
+    try std.testing.expectEqualSlices(u8, &expected, fake.payload_sent.items[0..expected.len]);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, fake.payload_sent.items[4..]);
     try std.testing.expectEqual(@as(u8, command.write_data), fake.sent.items[8]);
 }
 
@@ -425,7 +458,19 @@ test "T48 blocks reject address ranges that cross 32-bit memory" {
     var bytes = [_]u8{ 1, 2 };
 
     try std.testing.expectError(transport.Error.Io, readBlock(fake.transport(), .code, std.math.maxInt(u32), &bytes));
-    try std.testing.expectError(transport.Error.Io, writeBlock(fake.transport(), .code, std.math.maxInt(u32), &bytes));
+    try std.testing.expectError(transport.Error.Io, writeBlock(std.testing.allocator, fake.transport(), testDevice(), .code, std.math.maxInt(u32), &bytes));
+    try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
+}
+
+test "T48 write allocates its padded payload before sending the command" {
+    var storage: [0]u8 = .{};
+    var fixed = std.heap.FixedBufferAllocator.init(&storage);
+    var fake = transport.FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+    var device = testDevice();
+    device.write_buffer_size = 128;
+
+    try std.testing.expectError(error.OutOfMemory, writeBlock(fixed.allocator(), fake.transport(), device, .code, 0, &.{0xaa}));
     try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
 }
 

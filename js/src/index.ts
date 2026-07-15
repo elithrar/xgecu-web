@@ -7,7 +7,7 @@ export {
   performWebUSBTransfer
 } from "./webusb";
 export type { XgecuErrorCode } from "./errors";
-export type { UsbTransfer, UsbTransferHandler, RunOperationOptions } from "./wasm";
+export type { UsbTransfer, UsbTransferHandler, RunOperationOptions, WasmOperationHandle } from "./wasm";
 export type {
   ChipType,
   DeviceDetail,

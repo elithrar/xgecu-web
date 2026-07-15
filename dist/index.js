@@ -34,6 +34,7 @@ function i(e) {
 		case 22: return "OperationAborted";
 		case 23: return "WebUSBTransferFailed";
 		case 24: return "ShortRead";
+		case 25: return "TargetNotBlank";
 		default: return "Unknown";
 	}
 }
@@ -41,6 +42,7 @@ function i(e) {
 //#region js/src/wasm.ts
 var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 	exports;
+	operations = /* @__PURE__ */ new Map();
 	constructor(e) {
 		this.exports = e;
 	}
@@ -75,7 +77,7 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 		return this.withBytes(i, (a) => {
 			let o = this.exports.mp_start_read_rom(n, a, i.byteLength, r, +!!t.skipIdCheck, +!!t.continueOnIdMismatch);
 			if (o === 0) throw new e(this.lastError() || "Failed to start readROM operation.");
-			return o;
+			return this.registerOperation(o);
 		});
 	}
 	startWriteROM(t) {
@@ -94,20 +96,31 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 		return this.withBytes(i, (a) => this.withBytes(t.data, (o) => {
 			let s = this.exports.mp_start_write_rom(n, a, i.byteLength, r, o, t.data.byteLength, +!!t.erase, t.eraseNumFuses, t.erasePld, +!!t.verify, +!!t.skipIdCheck, +!!t.continueOnIdMismatch, +!!t.unprotectBefore, +!!t.protectAfter);
 			if (s === 0) throw new e(this.lastError() || "Failed to start writeROM operation.");
-			return s;
+			return this.registerOperation(s);
 		}));
 	}
+	disposeOperation(t) {
+		let n = this.operations.get(t);
+		if (n) {
+			if (n === "running") throw new e("The Wasm operation is currently running.", "OperationInProgress");
+			this.operations.delete(t), this.exports.mp_operation_destroy(t);
+		}
+	}
 	async runOperation(t, n, r = {}) {
-		let i, a = () => {
+		let i = this.operations.get(t);
+		if (i === "running") throw new e("The Wasm operation is already running.", "OperationInProgress");
+		if (i !== "ready") throw new e("The Wasm operation handle is invalid or already consumed.", "InvalidInput");
+		this.operations.set(t, "running");
+		let a, o = async () => {
 			if (!r.onProgress) return;
 			let e = this.operationProgress(t);
-			i?.phase === e.phase && i.offset === e.offset && i.total === e.total || (i = e, r.onProgress(e));
+			a?.phase === e.phase && a.offset === e.offset && a.total === e.total || (a = e, await r.onProgress(e));
 		};
 		try {
 			for (;;) {
 				if (r.signal?.aborted) throw this.exports.mp_operation_abort(t), await this.drainCleanupBestEffort(t, n), new e("Operation aborted.", "OperationAborted");
 				let i = this.exports.mp_operation_next(t);
-				if (i === 0) return this.throwIfError(this.exports.mp_operation_result(t)), a(), this.operationResultBytes(t).slice();
+				if (i === 0) return this.throwIfError(this.exports.mp_operation_result(t)), await o(), this.operationResultBytes(t).slice();
 				if (i === 1) {
 					let e = this.exports.mp_transfer_endpoint(t), r = this.memoryBytes(this.exports.mp_transfer_ptr(t), this.exports.mp_transfer_len(t)).slice();
 					try {
@@ -117,10 +130,10 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 							data: r
 						});
 					} catch (e) {
-						throw await this.failTransferAndCleanupBestEffort(t, n), e;
+						throw this.exports.mp_operation_complete(t, 1, 0, 0), e;
 					}
 					if (this.exports.mp_operation_complete(t, 0, 0, 0) !== 0) throw await this.drainCleanupBestEffort(t, n), this.operationError(t);
-					a();
+					await o();
 					continue;
 				}
 				if (i === 2) {
@@ -132,21 +145,27 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 							length: r
 						});
 					} catch (e) {
-						throw await this.failTransferAndCleanupBestEffort(t, n), e;
+						throw this.exports.mp_operation_complete(t, 1, 0, 0), e;
 					}
-					let o = i instanceof Uint8Array ? i : /* @__PURE__ */ new Uint8Array(), s = 0;
-					if (this.withBytes(o, (e) => {
-						s = this.exports.mp_operation_complete(t, 0, e, o.byteLength);
+					let a = i instanceof Uint8Array ? i : /* @__PURE__ */ new Uint8Array(), s = 0;
+					if (this.withBytes(a, (e) => {
+						s = this.exports.mp_operation_complete(t, 0, e, a.byteLength);
 					}), s !== 0) throw await this.drainCleanupBestEffort(t, n), this.operationError(t);
-					a();
+					await o();
 					continue;
 				}
 				throw this.operationError(t);
 			}
-		} catch (e) {
-			throw this.exports.mp_operation_abort(t), await this.drainCleanupBestEffort(t, n), e;
+		} catch (i) {
+			if (this.exports.mp_operation_abort(t), !await this.drainCleanupBestEffort(t, n)) {
+				try {
+					r.onCleanupFailure?.();
+				} catch {}
+				throw new e("The ROM operation failed and the programmer transaction could not be closed. Reconnect the programmer before continuing.", "WebUSBLifecycleFailed", i);
+			}
+			throw i;
 		} finally {
-			this.exports.mp_operation_destroy(t);
+			this.operations.delete(t), this.exports.mp_operation_destroy(t);
 		}
 	}
 	memoryBytes(e, t) {
@@ -187,18 +206,22 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 			total: this.exports.mp_operation_total(e)
 		};
 	}
-	async failTransferAndCleanupBestEffort(e, t) {
-		this.exports.mp_operation_complete(e, 1, 0, 0), await this.drainCleanupBestEffort(e, t);
+	registerOperation(t) {
+		let n = t;
+		if (this.operations.has(n)) throw new e("Wasm returned an operation handle that is already active.");
+		return this.operations.set(n, "ready"), n;
 	}
 	async drainCleanupBestEffort(e, t) {
 		try {
-			await this.drainCleanup(e, t);
-		} catch {}
+			return await this.drainCleanup(e, t);
+		} catch {
+			return !1;
+		}
 	}
 	async drainCleanup(e, t) {
 		for (let n = 0; n < 4; n += 1) {
 			let n = this.exports.mp_operation_next(e);
-			if (n === 0 || n === 3) return;
+			if (n === 0 || n === 3) return !0;
 			if (n === 1) {
 				await t({
 					direction: "out",
@@ -218,6 +241,7 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 				});
 			}
 		}
+		return !1;
 	}
 };
 function c(t, n) {
@@ -650,7 +674,8 @@ var Oe = (e) => e.status === "ok" ? {
 				try {
 					this.device.opened && this.state.claimed && await this.device.releaseInterface?.(D);
 				} catch {}
-				this.state.claimed = !1, this.device.opened && this.state.openedByLibrary && await this.device.close(), this.state.openedByLibrary = !1, this.state.references = 0, this.state.sessionEstablished = !1, this.closed = !0;
+				if (this.state.claimed = !1, this.device.opened && (this.state.openedByLibrary || this.state.poisoned) && await this.device.close(), this.state.poisoned && this.device.opened) throw new e("Failed to reset the programmer after transaction cleanup failed.", "WebUSBLifecycleFailed");
+				this.state.openedByLibrary = !1, this.state.references = 0, this.state.poisoned = !1, this.state.sessionEstablished = !1, this.closed = !0;
 			} finally {
 				this.state.lifecycleActive = !1;
 			}
@@ -688,50 +713,82 @@ var Oe = (e) => e.status === "ok" ? {
 		}));
 	}
 	async readROM(e) {
-		return U(e.programmer), Pe(e), Y(e.signal), H(e.programmer.device, async () => {
-			await N(e.programmer.device);
-			let t = this.wasm.startReadROM({
-				programmer: e.programmerKind ?? "auto",
-				device: e.device,
-				memory: e.memory ?? "code",
-				skipIdCheck: e.skipIdCheck ?? !1,
-				continueOnIdMismatch: e.continueOnIdMismatch ?? !1
+		W(e.programmer), Fe(e), Y(e.signal);
+		let t = {
+			programmer: e.programmer,
+			programmerKind: e.programmerKind ?? "auto",
+			device: e.device,
+			memory: e.memory ?? "code",
+			skipIdCheck: e.skipIdCheck ?? !1,
+			continueOnIdMismatch: e.continueOnIdMismatch ?? !1,
+			signal: e.signal,
+			onProgress: e.onProgress
+		}, n = t.programmer.device;
+		return H(n, async () => {
+			await N(n);
+			let e = this.wasm.startReadROM({
+				programmer: t.programmerKind,
+				device: t.device,
+				memory: t.memory,
+				skipIdCheck: t.skipIdCheck,
+				continueOnIdMismatch: t.continueOnIdMismatch
 			});
-			return this.wasm.runOperation(t, (t) => M(e.programmer.device, t), {
-				signal: e.signal,
-				onProgress: e.onProgress
+			return this.wasm.runOperation(e, (e) => M(n, e), {
+				signal: t.signal,
+				onProgress: t.onProgress,
+				onCleanupFailure: () => U(n)
 			});
 		});
 	}
 	async writeROM(t) {
-		if (U(t.programmer), W(t), Y(t.signal), t.data.byteLength === 0) throw new e("writeROM data must not be empty.", "InputTooLarge");
-		return H(t.programmer.device, async () => {
-			let n = this.wasm.resolveDevice(t.device, t.programmerKind ?? "auto");
-			if (!n) throw new e("Device not found or unsupported by requested programmer.", "DeviceNotFound");
-			let r = Ne(n, t.memory ?? "code");
-			if (r === 0) throw new e("Selected memory region is empty.", "EmptyMemoryRegion");
-			if (t.data.byteLength > r) throw new e("writeROM data is larger than the selected memory region.", "InputTooLarge");
-			if ((t.erase ?? !0) && (t.memory ?? "code") !== "code") throw new e("Erase writes are restricted to full code-memory images because erase scope is device-specific.", "InvalidInput");
-			if ((t.erase ?? !0) && t.data.byteLength !== r) throw new e("writeROM data must match the selected memory region when erase is enabled.", "InputTooLarge");
-			if ((t.erase ?? !0) && !n.canErase) throw new e("The selected device cannot be electrically erased. Externally erase and blank-check it, then write with erase: false.", "InvalidInput");
-			await N(t.programmer.device);
-			let i = this.wasm.startWriteROM({
-				programmer: t.programmerKind ?? "auto",
-				device: t.device,
-				memory: t.memory ?? "code",
-				data: t.data,
-				erase: t.erase ?? !0,
-				eraseNumFuses: t.eraseNumFuses ?? 0,
-				erasePld: t.erasePld ?? 0,
-				verify: t.verify ?? !0,
-				skipIdCheck: t.skipIdCheck ?? !1,
-				continueOnIdMismatch: t.continueOnIdMismatch ?? !1,
-				unprotectBefore: t.unprotectBefore ?? !1,
-				protectAfter: t.protectAfter ?? !1
+		W(t.programmer), Ie(t), Y(t.signal);
+		let n = {
+			programmer: t.programmer,
+			programmerKind: t.programmerKind ?? "auto",
+			device: t.device,
+			data: t.data.slice(),
+			memory: t.memory ?? "code",
+			erase: t.erase ?? !0,
+			eraseNumFuses: t.eraseNumFuses ?? 0,
+			erasePld: t.erasePld ?? 0,
+			verify: t.verify ?? !0,
+			skipIdCheck: t.skipIdCheck ?? !1,
+			continueOnIdMismatch: t.continueOnIdMismatch ?? !1,
+			unprotectBefore: t.unprotectBefore ?? !1,
+			protectAfter: t.protectAfter ?? !1,
+			signal: t.signal,
+			onProgress: t.onProgress
+		};
+		if (n.data.byteLength === 0) throw new e("writeROM data must not be empty.", "InputTooLarge");
+		let r = n.programmer.device;
+		return H(r, async () => {
+			let t = this.wasm.resolveDevice(n.device, n.programmerKind);
+			if (!t) throw new e("Device not found or unsupported by requested programmer.", "DeviceNotFound");
+			let i = Ne(t, n.memory);
+			if (i === 0) throw new e("Selected memory region is empty.", "EmptyMemoryRegion");
+			if (n.data.byteLength > i) throw new e("writeROM data is larger than the selected memory region.", "InputTooLarge");
+			if (n.erase && n.memory !== "code") throw new e("Erase writes are restricted to full code-memory images because erase scope is device-specific.", "InvalidInput");
+			if (n.erase && n.data.byteLength !== i) throw new e("writeROM data must match the selected memory region when erase is enabled.", "InputTooLarge");
+			if (n.erase && !t.canErase) throw new e("The selected device cannot be electrically erased. Externally erase and blank-check it, then write with erase: false.", "InvalidInput");
+			await N(r);
+			let a = this.wasm.startWriteROM({
+				programmer: n.programmerKind,
+				device: n.device,
+				memory: n.memory,
+				data: n.data,
+				erase: n.erase,
+				eraseNumFuses: n.eraseNumFuses,
+				erasePld: n.erasePld,
+				verify: n.verify,
+				skipIdCheck: n.skipIdCheck,
+				continueOnIdMismatch: n.continueOnIdMismatch,
+				unprotectBefore: n.unprotectBefore,
+				protectAfter: n.protectAfter
 			});
-			await this.wasm.runOperation(i, (e) => M(t.programmer.device, e), {
-				signal: t.signal,
-				onProgress: t.onProgress
+			await this.wasm.runOperation(a, (e) => M(r, e), {
+				signal: n.signal,
+				onProgress: n.onProgress,
+				onCleanupFailure: () => U(r)
 			});
 		});
 	}
@@ -772,10 +829,15 @@ async function P(t, n = !1) {
 	let r = R(t);
 	if (r.lifecycleActive || !n && r.operations !== 0) throw new e("A USB lifecycle operation is already in progress for this programmer.", "OperationInProgress");
 	if (n && !t.opened && r.sessionEstablished) throw new e("The programmer connection was lost. Reconnect before starting another ROM operation.", "WebUSBLifecycleFailed");
+	if (n && r.poisoned) throw new e("The programmer is in an unknown transaction state. Reconnect before starting another ROM operation.", "WebUSBLifecycleFailed");
 	r.lifecycleActive = !0;
 	let i = !1;
 	try {
-		t.opened || (r.claimed = !1, await $("open USB device", () => t.open()), r.openedByLibrary = !0, i = !0), t.configuration?.configurationValue !== O && (await $("select USB configuration 1", () => t.selectConfiguration(O)), r.claimed = !1), r.claimed ||= (await $("claim USB interface 0", () => t.claimInterface(D)), !0), await je(t), r.sessionEstablished = !0;
+		if (!n && r.poisoned) {
+			if (t.opened && r.claimed && await t.releaseInterface?.(D).catch(() => void 0), r.claimed = !1, t.opened && await $("reset the programmer after transaction cleanup failed", () => t.close()), t.opened) throw new e("The programmer remained open after reset. Disconnect and reconnect it before continuing.", "WebUSBLifecycleFailed");
+			r.openedByLibrary = !1, r.sessionEstablished = !1;
+		}
+		t.opened || (r.claimed = !1, await $("open USB device", () => t.open()), r.openedByLibrary = !0, i = !0), t.configuration?.configurationValue !== O && (await $("select USB configuration 1", () => t.selectConfiguration(O)), r.claimed = !1), r.claimed ||= (await $("claim USB interface 0", () => t.claimInterface(D)), !0), await je(t), r.poisoned = !1, r.sessionEstablished = !0;
 	} catch (e) {
 		throw r.claimed && await t.releaseInterface?.(D).catch(() => void 0), r.claimed = !1, i && t.opened && await t.close().catch(() => void 0), i && (r.openedByLibrary = !1, r.sessionEstablished = !1), e;
 	} finally {
@@ -811,6 +873,7 @@ function R(e) {
 		lifecycleActive: !1,
 		openedByLibrary: !1,
 		operations: 0,
+		poisoned: !1,
 		references: 0,
 		sessionEstablished: !1
 	}, k.set(e, t)), t;
@@ -849,17 +912,23 @@ async function H(t, n) {
 	try {
 		return Q(w.ok(await n()));
 	} catch (e) {
-		throw Q(w.err(r(e)));
+		throw i.poisoned && await Pe(t, i), Q(w.err(r(e)));
 	} finally {
 		--i.operations;
 	}
 }
-function U(t) {
+function U(e) {
+	R(e).poisoned = !0;
+}
+async function Pe(e, t) {
+	e.opened && t.claimed && await e.releaseInterface?.(D).catch(() => void 0), e.opened && await e.close().catch(() => void 0), t.claimed = !1, e.opened || (t.openedByLibrary = !1), t.sessionEstablished = !1;
+}
+function W(t) {
 	if (!(t instanceof A)) throw new e("Use WebUSBProgrammerConnection or a connection returned by the programmer API.", "WebUSBLifecycleFailed");
 	if (!B(t.device)) throw new e("USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
 	if (t.isClosed) throw new e("The programmer connection is closed.", "WebUSBLifecycleFailed");
 }
-function Pe(e) {
+function Fe(e) {
 	G(e.programmerKind, [
 		"auto",
 		"t48",
@@ -870,7 +939,7 @@ function Pe(e) {
 		"user"
 	], "memory"), K(e, ["skipIdCheck", "continueOnIdMismatch"]);
 }
-function W(e) {
+function Ie(e) {
 	e.data instanceof Uint8Array || J("data must be a Uint8Array"), G(e.programmerKind, [
 		"auto",
 		"t48",

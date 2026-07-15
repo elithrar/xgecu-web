@@ -19,6 +19,7 @@ class FakeDevice implements USBDeviceLike {
   bytesWritten: number | undefined;
   omitInData = false;
   failRelease = false;
+  failClose = false;
   failClaim = false;
   failTransferIn: unknown;
 
@@ -27,6 +28,7 @@ class FakeDevice implements USBDeviceLike {
   }
 
   async close(): Promise<void> {
+    if (this.failClose) throw new Error("close failed");
     this.opened = false;
   }
 
@@ -286,6 +288,30 @@ describe("BrowserXgecuWebUSB", () => {
     expect(runOperation).toHaveBeenCalledOnce();
   });
 
+  it("snapshots write options and bytes before asynchronous device setup", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    const startWriteROM = vi.spyOn(wasm, "startWriteROM");
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+    const data = new Uint8Array(8192);
+    data[0] = 0x12;
+    const options = { programmer, device: "AT28C64B@DIP28", data, verify: true };
+
+    const write = api.writeROM(options);
+    data[0] = 0x34;
+    options.device = "mutated";
+    options.verify = false;
+    await write;
+
+    expect(startWriteROM).toHaveBeenCalledWith(expect.objectContaining({
+      device: "AT28C64B@DIP28",
+      verify: true,
+      data: expect.any(Uint8Array)
+    }));
+    expect(vi.mocked(startWriteROM).mock.calls[0][0].data[0]).toBe(0x12);
+  });
+
   it("rejects oversized writeROM data before starting Wasm operation", async () => {
     const device = new FakeDevice();
     const wasm = fakeWasm();
@@ -449,6 +475,41 @@ describe("BrowserXgecuWebUSB", () => {
     expect(device.opened).toBe(true);
     expect(device.claimInterface).toHaveBeenCalledOnce();
   });
+
+  it("closes and quarantines a programmer when transaction cleanup fails", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "runOperation").mockImplementation(async (_handle, _performTransfer, options) => {
+      options?.onCleanupFailure?.();
+      throw new WebUSBTransferError("cleanup failed");
+    });
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toThrow("cleanup failed");
+    expect(device.opened).toBe(false);
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+
+    await api.connectProgrammer(device);
+    expect(device.opened).toBe(true);
+  });
+
+  it("preserves quarantine when a poisoned programmer cannot be reset", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "runOperation").mockImplementation(async (_handle, _performTransfer, options) => {
+      options?.onCleanupFailure?.();
+      device.failClose = true;
+      throw new WebUSBTransferError("cleanup failed");
+    });
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toThrow("cleanup failed");
+    expect(device.opened).toBe(true);
+    await expect(api.connectProgrammer(device)).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+  });
 });
 
 function fakeWasm(): WasmBridge {
@@ -478,6 +539,8 @@ function fakeDeviceSummary() {
     chipIdBytesCount: 0,
     blankValue: 0xff,
     canErase: true,
+    supportsUnprotect: true,
+    supportsProtect: true,
     supportsT48: true,
     supportsT56: false
   } as const;

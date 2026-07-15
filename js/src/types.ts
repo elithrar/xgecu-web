@@ -16,6 +16,10 @@ export interface DeviceSummary {
   blankValue: number;
   /** Whether the programmer can electrically erase this target. */
   canErase: boolean;
+  /** Whether catalog metadata supports disabling write protection before programming. */
+  supportsUnprotect: boolean;
+  /** Whether catalog metadata supports enabling write protection after programming. */
+  supportsProtect: boolean;
   supportsT48: boolean;
   supportsT56: boolean;
 }
@@ -79,7 +83,7 @@ export interface RomProgressEvent {
   total: number;
 }
 
-export type RomProgressHandler = (event: RomProgressEvent) => void;
+export type RomProgressHandler = (event: RomProgressEvent) => void | Promise<void>;
 
 export interface XgecuWebUSB {
   deviceList(query?: DeviceListQuery): DeviceSummary[];

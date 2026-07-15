@@ -35,6 +35,12 @@ const State = enum {
     recv_begin_status,
     send_chip_id,
     recv_chip_id,
+    send_end_after_chip_id,
+    send_post_id_t56_bitstream_header,
+    send_post_id_t56_bitstream_payload,
+    send_post_id_begin,
+    send_post_id_status,
+    recv_post_id_status,
     send_erase,
     recv_erase,
     send_end_after_erase,
@@ -46,10 +52,26 @@ const State = enum {
     send_protect_off,
     send_protect_off_status,
     recv_protect_off_status,
+    blank_send_read_cmd,
+    blank_recv_read_payload,
+    blank_send_read_status,
+    blank_recv_read_status,
+    send_end_after_blank,
+    send_post_blank_t56_bitstream_header,
+    send_post_blank_t56_bitstream_payload,
+    send_post_blank_begin,
+    send_post_blank_status,
+    recv_post_blank_status,
     send_write_cmd,
     send_write_payload,
     send_write_status,
     recv_write_status,
+    send_end_before_verify,
+    send_verify_t56_bitstream_header,
+    send_verify_t56_bitstream_payload,
+    send_verify_begin,
+    send_verify_begin_status,
+    recv_verify_begin_status,
     send_protect_on,
     send_protect_on_status,
     recv_protect_on_status,
@@ -174,6 +196,7 @@ export fn mp_device_detail(name_ptr: u32, name_len: u32, programmer_value: u32) 
     const programmer = programmerFromAbi(programmer_value) catch return setError("invalid programmer");
     const device = catalog.find(name, programmer) catch return setResult(allocator().dupe(u8, "null") catch return setError("out of memory"));
     const package = model.decodePackageDetails(device.package_details_raw);
+    const flags = model.decodeFlags(device.flags_raw, device.voltages_raw, device.chip_info, device.protocol_id);
     const summary = catalog.DeviceSummary{
         .name = device.canonical_name,
         .aliases = device.aliases,
@@ -187,6 +210,8 @@ export fn mp_device_detail(name_ptr: u32, name_len: u32, programmer_value: u32) 
         .chip_id_bytes_count = device.chip_id_bytes_count,
         .blank_value = device.blank_value,
         .can_erase = device.can_erase,
+        .supports_unprotect = flags.off_protect_before,
+        .supports_protect = flags.protect_after,
         .supports_t48 = device.supports(.t48),
         .supports_t56 = device.supports(.t56),
     };
@@ -356,7 +381,7 @@ export fn mp_operation_total(handle: u32) u32 {
     const op = operationFromHandle(handle);
     const total = switch (op.kind) {
         .read => op.data.len,
-        .write => if (op.state == .verify_send_read_cmd or op.state == .verify_recv_read_payload) op.verify_data.len else op.data.len,
+        .write => if (isBlankCheckState(op.state)) memorySize(op.device, op.memory) else if (op.state == .verify_send_read_cmd or op.state == .verify_recv_read_payload) op.verify_data.len else op.data.len,
     };
     return @intCast(@min(total, std.math.maxInt(u32)));
 }
@@ -372,7 +397,7 @@ fn nextTransfer(op: *Operation) !Transfer {
             return outTransfer(op, endpoints.command, op.command[0..packet.system_info_request_len]);
         },
         .recv_info => return inTransfer(endpoints.command, packet.system_info_response_len),
-        .send_t56_bitstream_header, .send_second_t56_bitstream_header => {
+        .send_t56_bitstream_header, .send_post_id_t56_bitstream_header, .send_second_t56_bitstream_header, .send_post_blank_t56_bitstream_header, .send_verify_t56_bitstream_header => {
             @memset(op.command[0..packet.bitstream_header_len], 0);
             op.command[0] = command.write_bitstream;
             const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
@@ -380,22 +405,22 @@ fn nextTransfer(op: *Operation) !Transfer {
             endian.storeInt(op.command[4..8], bitstream.len, .little);
             return outTransfer(op, endpoints.command, op.command[0..packet.bitstream_header_len]);
         },
-        .send_t56_bitstream_payload, .send_second_t56_bitstream_payload => {
+        .send_t56_bitstream_payload, .send_post_id_t56_bitstream_payload, .send_second_t56_bitstream_payload, .send_post_blank_t56_bitstream_payload, .send_verify_t56_bitstream_payload => {
             const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
             if (bitstream.len == 0) return error.AlgorithmUnavailable;
             return outTransfer(op, endpoints.command, bitstream);
         },
-        .send_begin, .send_second_begin => {
+        .send_begin, .send_post_id_begin, .send_second_begin, .send_post_blank_begin, .send_verify_begin => {
             writeBeginPacket(op);
             op.transaction_open = true;
             return outTransfer(op, endpoints.command, op.command[0..packet.begin_len]);
         },
-        .send_begin_status, .send_second_status, .send_protect_off_status, .send_write_status, .send_protect_on_status, .send_read_status, .verify_send_read_status => {
+        .send_begin_status, .send_post_id_status, .send_second_status, .send_post_blank_status, .send_verify_begin_status, .send_protect_off_status, .blank_send_read_status, .send_write_status, .send_protect_on_status, .send_read_status, .verify_send_read_status => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.request_status;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .recv_begin_status, .recv_second_status, .recv_protect_off_status, .recv_write_status, .recv_protect_on_status, .recv_read_status, .verify_recv_read_status => return inTransfer(endpoints.command, packet.status_len),
+        .recv_begin_status, .recv_post_id_status, .recv_second_status, .recv_post_blank_status, .recv_verify_begin_status, .recv_protect_off_status, .blank_recv_read_status, .recv_write_status, .recv_protect_on_status, .recv_read_status, .verify_recv_read_status => return inTransfer(endpoints.command, packet.status_len),
         .send_chip_id => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.read_id;
@@ -415,7 +440,7 @@ fn nextTransfer(op: *Operation) !Transfer {
             op.command[0] = if (op.state == .send_protect_off) command.protect_off else command.protect_on;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .send_end_after_erase, .send_final_end, .send_abort_end => {
+        .send_end_after_chip_id, .send_end_after_erase, .send_end_after_blank, .send_end_before_verify, .send_final_end, .send_abort_end => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.end_transaction;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
@@ -430,27 +455,24 @@ fn nextTransfer(op: *Operation) !Transfer {
         },
         .send_write_payload => {
             const len = currentWriteLen(op);
-            if (op.programmer == .t56) {
-                const transfer_len = @max(@as(usize, op.descriptor.write_buffer_size), len);
-                if (transfer_len > op.payload.len) return error.PayloadBufferTooSmall;
-                @memset(op.payload[0..transfer_len], 0);
-                @memcpy(op.payload[0..len], op.data[op.offset .. op.offset + len]);
-                return outTransfer(op, endpoints.command, op.payload[0..transfer_len]);
-            }
-            return outTransfer(op, endpoints.payload, op.data[op.offset .. op.offset + len]);
+            const transfer_len = @max(@as(usize, op.descriptor.write_buffer_size), len);
+            if (transfer_len > op.payload.len) return error.PayloadBufferTooSmall;
+            @memset(op.payload[0..transfer_len], 0);
+            @memcpy(op.payload[0..len], op.data[op.offset .. op.offset + len]);
+            return outTransfer(op, if (op.programmer == .t56) endpoints.command else endpoints.payload, op.payload[0..transfer_len]);
         },
-        .send_read_cmd, .verify_send_read_cmd => {
-            const len = currentReadLen(op);
+        .blank_send_read_cmd, .send_read_cmd, .verify_send_read_cmd => {
+            const len = if (op.state == .blank_send_read_cmd) currentBlankReadLen(op) else currentReadLen(op);
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = readCommand(op.memory);
             endian.storeInt(op.command[2..4], len, .little);
             endian.storeInt(op.command[4..8], op.offset, .little);
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .recv_read_payload, .verify_recv_read_payload => {
-            const len = currentReadLen(op);
+        .blank_recv_read_payload, .recv_read_payload, .verify_recv_read_payload => {
+            const len = if (op.state == .blank_recv_read_payload) currentBlankReadLen(op) else currentReadLen(op);
             if (op.programmer == .t56) return inTransfer(endpoints.command, @intCast(len + packet.t56_read_status_slop));
-            return inTransfer(endpoints.payload, @intCast(len));
+            return inTransfer(endpoints.payload, @intCast(@max(len, packet.t48_min_read_payload_len)));
         },
         .done => return .{ .kind = .done },
         .failed => return .{ .kind = .failed },
@@ -484,10 +506,8 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 if (op.erase and op.data.len != size) return error.InputTooLarge;
                 if (op.erase and !op.device.can_erase) return error.EraseUnsupported;
                 if (op.verify) op.verify_data = try allocator().alloc(u8, op.data.len);
-                if (info.programmer == .t56) {
-                    if (op.descriptor.write_buffer_size > packet.t56_padded_write_payload_max) return error.PayloadBufferTooSmall;
-                    op.payload = try allocator().alloc(u8, @max(@as(usize, op.descriptor.write_buffer_size), 1));
-                }
+                if (info.programmer == .t56 and op.descriptor.write_buffer_size > packet.t56_padded_write_payload_max) return error.PayloadBufferTooSmall;
+                op.payload = try allocator().alloc(u8, @max(@as(usize, op.descriptor.write_buffer_size), 1));
             }
             op.state = if (op.programmer == .t56) .send_t56_bitstream_header else .send_begin;
         },
@@ -505,11 +525,26 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         .send_chip_id => op.state = .recv_chip_id,
         .recv_chip_id => {
             try checkChipId(op, data);
+            op.state = .send_end_after_chip_id;
+        },
+        .send_end_after_chip_id => {
+            op.transaction_open = false;
+            op.state = if (op.programmer == .t56) .send_post_id_t56_bitstream_header else .send_post_id_begin;
+        },
+        .send_post_id_t56_bitstream_header => op.state = .send_post_id_t56_bitstream_payload,
+        .send_post_id_t56_bitstream_payload => op.state = .send_post_id_begin,
+        .send_post_id_begin => {
+            op.transaction_open = true;
+            op.state = .send_post_id_status;
+        },
+        .send_post_id_status => op.state = .recv_post_id_status,
+        .recv_post_id_status => {
+            try checkStatus(op, data);
             op.state = afterChipIdState(op);
         },
         .send_erase => op.state = .recv_erase,
         .recv_erase => {
-            try checkStatus(op, data);
+            try checkEraseResponse(op, data);
             op.state = .send_end_after_erase;
         },
         .send_end_after_erase => {
@@ -533,6 +568,41 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             try checkStatus(op, data);
             op.state = .send_write_cmd;
         },
+        .blank_send_read_cmd => op.state = .blank_recv_read_payload,
+        .blank_recv_read_payload => {
+            const len = currentBlankReadLen(op);
+            const source = data[0..@min(len, data.len)];
+            if (source.len < len) {
+                setShortRead(op, source.len, len);
+                return error.ShortRead;
+            }
+            for (source) |byte| {
+                if (byte != op.device.blank_value) return error.TargetNotBlank;
+            }
+            op.offset += len;
+            op.state = if (op.programmer == .t48) .blank_send_read_status else afterBlankReadStatus(op);
+        },
+        .blank_send_read_status => op.state = .blank_recv_read_status,
+        .blank_recv_read_status => {
+            try checkStatus(op, data);
+            op.state = afterBlankReadStatus(op);
+        },
+        .send_end_after_blank => {
+            op.transaction_open = false;
+            op.state = if (op.programmer == .t56) .send_post_blank_t56_bitstream_header else .send_post_blank_begin;
+        },
+        .send_post_blank_t56_bitstream_header => op.state = .send_post_blank_t56_bitstream_payload,
+        .send_post_blank_t56_bitstream_payload => op.state = .send_post_blank_begin,
+        .send_post_blank_begin => {
+            op.transaction_open = true;
+            op.state = .send_post_blank_status;
+        },
+        .send_post_blank_status => op.state = .recv_post_blank_status,
+        .recv_post_blank_status => {
+            try checkStatus(op, data);
+            op.offset = 0;
+            op.state = if (op.unprotect_before) .send_protect_off else .send_write_cmd;
+        },
         .send_write_cmd => op.state = .send_write_payload,
         .send_write_payload => op.state = .send_write_status,
         .send_write_status => op.state = .recv_write_status,
@@ -543,12 +613,28 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 op.state = .send_write_cmd;
             } else if (op.verify) {
                 op.offset = 0;
-                op.state = .verify_send_read_cmd;
+                op.state = .send_end_before_verify;
             } else if (op.protect_after) {
                 op.state = .send_protect_on;
             } else {
                 op.state = .send_final_end;
             }
+        },
+        .send_end_before_verify => {
+            op.transaction_open = false;
+            op.state = if (op.programmer == .t56) .send_verify_t56_bitstream_header else .send_verify_begin;
+        },
+        .send_verify_t56_bitstream_header => op.state = .send_verify_t56_bitstream_payload,
+        .send_verify_t56_bitstream_payload => op.state = .send_verify_begin,
+        .send_verify_begin => {
+            op.transaction_open = true;
+            op.state = .send_verify_begin_status;
+        },
+        .send_verify_begin_status => op.state = .recv_verify_begin_status,
+        .recv_verify_begin_status => {
+            try checkStatus(op, data);
+            op.offset = 0;
+            op.state = .verify_send_read_cmd;
         },
         .send_protect_on => op.state = .send_protect_on_status,
         .send_protect_on_status => op.state = .recv_protect_on_status,
@@ -644,6 +730,13 @@ fn currentWriteLen(op: *Operation) usize {
     return @min(chunk, op.data.len - op.offset);
 }
 
+fn currentBlankReadLen(op: *Operation) usize {
+    const total = memorySize(op.device, op.memory);
+    const descriptor_chunk = @max(@as(usize, op.descriptor.read_buffer_size), 1);
+    const chunk = if (op.programmer == .t56) @min(descriptor_chunk, packet.t56_read_payload_max) else descriptor_chunk;
+    return @min(chunk, total - op.offset);
+}
+
 fn memorySize(device: catalog.DeviceRecord, memory: model.MemoryKind) usize {
     return switch (memory) {
         .code => device.code_memory_size,
@@ -659,7 +752,18 @@ fn shouldCheckChipId(op: *Operation) bool {
 fn afterChipIdState(op: *Operation) State {
     return switch (op.kind) {
         .read => .send_read_cmd,
-        .write => if (op.erase) .send_erase else if (op.unprotect_before) .send_protect_off else .send_write_cmd,
+        .write => if (op.erase) .send_erase else if (!op.device.can_erase) .blank_send_read_cmd else if (op.unprotect_before) .send_protect_off else .send_write_cmd,
+    };
+}
+
+fn afterBlankReadStatus(op: *Operation) State {
+    return if (op.offset < memorySize(op.device, op.memory)) .blank_send_read_cmd else .send_end_after_blank;
+}
+
+fn isBlankCheckState(state: State) bool {
+    return switch (state) {
+        .blank_send_read_cmd, .blank_recv_read_payload, .blank_send_read_status, .blank_recv_read_status, .send_end_after_blank, .send_post_blank_t56_bitstream_header, .send_post_blank_t56_bitstream_payload, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => true,
+        else => false,
     };
 }
 
@@ -676,6 +780,18 @@ fn checkStatus(op: *Operation, data: []const u8) !void {
     }
     if (data[12] != 0) return error.Overcurrent;
     if (data[0] != 0) return error.ProgrammerStatusError;
+}
+
+fn checkEraseResponse(op: *Operation, data: []const u8) !void {
+    if (op.programmer == .t48 and data.len <= packet.t48_erase_ack_len) {
+        if (data.len < packet.t48_erase_ack_len) {
+            setShortRead(op, data.len, packet.t48_erase_ack_len);
+            return error.ShortRead;
+        }
+        // T48's short erase acknowledgement is opaque; restart status is authoritative.
+        return;
+    }
+    try checkStatus(op, data);
 }
 
 fn checkChipId(op: *Operation, data: []const u8) !void {
@@ -759,7 +875,7 @@ fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void
     try writer.writeAll(",\"chipType\":");
     try writeJsonString(writer, chipTypeName(summary.chip_type));
     try writer.print(
-        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"canErase\":{},\"supportsT48\":{},\"supportsT56\":{}}}",
+        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"canErase\":{},\"supportsUnprotect\":{},\"supportsProtect\":{},\"supportsT48\":{},\"supportsT56\":{}}}",
         .{
             summary.code_memory_size,
             summary.data_memory_size,
@@ -770,6 +886,8 @@ fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void
             summary.chip_id_bytes_count,
             summary.blank_value,
             summary.can_erase,
+            summary.supports_unprotect,
+            summary.supports_protect,
             summary.supports_t48,
             summary.supports_t56,
         },
@@ -871,18 +989,19 @@ fn errorCode(err: anyerror) u32 {
         error.OperationAborted => 22,
         error.WebUSBTransferFailed => 23,
         error.ShortRead => 24,
+        error.TargetNotBlank => 25,
         else => 1,
     };
 }
 
 fn phaseCode(state: State) u32 {
     return switch (state) {
-        .send_info, .recv_info, .send_t56_bitstream_header, .send_t56_bitstream_payload, .send_begin, .send_begin_status, .recv_begin_status, .send_second_t56_bitstream_header, .send_second_t56_bitstream_payload, .send_second_begin, .send_second_status, .recv_second_status => 1,
-        .send_chip_id, .recv_chip_id => 2,
+        .send_info, .recv_info, .send_t56_bitstream_header, .send_t56_bitstream_payload, .send_begin, .send_begin_status, .recv_begin_status, .send_post_id_t56_bitstream_header, .send_post_id_t56_bitstream_payload, .send_post_id_begin, .send_post_id_status, .recv_post_id_status, .send_second_t56_bitstream_header, .send_second_t56_bitstream_payload, .send_second_begin, .send_second_status, .recv_second_status, .send_post_blank_t56_bitstream_header, .send_post_blank_t56_bitstream_payload, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => 1,
+        .send_chip_id, .recv_chip_id, .send_end_after_chip_id => 2,
         .send_erase, .recv_erase, .send_end_after_erase => 3,
         .send_protect_off, .send_protect_off_status, .recv_protect_off_status, .send_write_cmd, .send_write_payload, .send_write_status, .recv_write_status, .send_protect_on, .send_protect_on_status, .recv_protect_on_status => 4,
-        .send_read_cmd, .recv_read_payload, .send_read_status, .recv_read_status => 5,
-        .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
+        .blank_send_read_cmd, .blank_recv_read_payload, .blank_send_read_status, .blank_recv_read_status, .send_end_after_blank, .send_read_cmd, .recv_read_payload, .send_read_status, .recv_read_status => 5,
+        .send_end_before_verify, .send_verify_t56_bitstream_header, .send_verify_t56_bitstream_payload, .send_verify_begin, .send_verify_begin_status, .recv_verify_begin_status, .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
         .send_final_end, .send_abort_end => 7,
         .done => 8,
         .failed => 9,
@@ -964,6 +1083,7 @@ test "T48 Wasm write operation sequences write status and verify transfers" {
     defer {
         alloc.free(op.data);
         if (op.verify_data.len != 0) alloc.free(op.verify_data);
+        if (op.payload.len != 0) alloc.free(op.payload);
     }
 
     var info = [_]u8{0} ** packet.system_info_response_len;
@@ -983,21 +1103,116 @@ test "T48 Wasm write operation sequences write status and verify transfers" {
     try completeTransfer(&op, &status);
     try expectNextTransfer(&op, .out, 1, 8); // write command
     try completeTransfer(&op, &.{});
-    try expectNextTransfer(&op, .out, 2, 4); // T48 payload endpoint
+    try expectNextTransfer(&op, .out, 2, 128); // padded T48 payload endpoint
+    try std.testing.expectEqualSlices(u8, data, op.payload[0..data.len]);
+    try std.testing.expect(std.mem.allEqual(u8, op.payload[data.len..], 0));
     try completeTransfer(&op, &.{});
     try expectNextTransfer(&op, .out, 1, 8); // write status command
     try completeTransfer(&op, &.{});
     try completeTransfer(&op, &status);
+    try std.testing.expectEqual(@as(usize, 0), op.offset);
+    try expectNextTransfer(&op, .out, 1, 8); // end write transaction before verify
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 1, 64); // begin independent verify transaction
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 1, 8); // verify begin status command
+    try completeTransfer(&op, &.{});
+    try completeTransfer(&op, &status);
     try expectNextTransfer(&op, .out, 1, 8); // verify read command
     try completeTransfer(&op, &.{});
-    try expectNextTransfer(&op, .in, 2, 4); // T48 read payload endpoint
-    try completeTransfer(&op, data);
+    try expectNextTransfer(&op, .in, 2, 64); // T48 firmware minimum read frame
+    var read_payload = [_]u8{0} ** packet.t48_min_read_payload_len;
+    @memcpy(read_payload[0..data.len], data);
+    try completeTransfer(&op, &read_payload);
     try expectNextTransfer(&op, .out, 1, 8); // verify read status command
     try completeTransfer(&op, &.{});
     try completeTransfer(&op, &status);
     try expectNextTransfer(&op, .out, 1, 8); // final end transaction
     try completeTransfer(&op, &.{});
     try std.testing.expectEqual(State.done, op.state);
+}
+
+test "Wasm chip ID check ends and restarts the programming transaction" {
+    var op = Operation{
+        .kind = .read,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[1],
+        .descriptor = catalog.devices[1].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_chip_id,
+        .transaction_open = true,
+    };
+    var chip_id = [_]u8{0} ** packet.chip_id_len;
+    chip_id[0] = 1;
+    chip_id[2] = 0x9b;
+    chip_id[3] = 0x08;
+
+    try completeTransfer(&op, &chip_id);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.end_transaction, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.begin_len);
+    try std.testing.expectEqual(command.begin_transaction, op.command[0]);
+}
+
+test "Wasm non-erasable writes reject a nonblank target" {
+    var write_data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[1],
+        .descriptor = catalog.devices[1].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_begin_status,
+        .data = &write_data,
+        .erase = false,
+        .skip_id_check = true,
+        .transaction_open = true,
+    };
+    var status = [_]u8{0} ** packet.status_len;
+
+    try completeTransfer(&op, &status);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.read_code, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .in, endpoints.payload, 512);
+    var target = [_]u8{0xff} ** 512;
+    target[0] = 0;
+    try std.testing.expectError(error.TargetNotBlank, completeTransfer(&op, &target));
+}
+
+test "Wasm blank check uses a separate write transaction" {
+    var write_data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[1],
+        .descriptor = catalog.devices[1].descriptor(.t48),
+        .memory = .code,
+        .state = .blank_recv_read_payload,
+        .data = &write_data,
+        .offset = catalog.devices[1].code_memory_size - 4,
+        .erase = false,
+        .skip_id_check = true,
+        .transaction_open = true,
+    };
+    op.descriptor.read_buffer_size = 4;
+    var target = [_]u8{0xff} ** packet.t48_min_read_payload_len;
+    var status = [_]u8{0} ** packet.status_len;
+
+    try completeTransfer(&op, &target);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.request_status, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try completeTransfer(&op, &status);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.end_transaction, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.begin_len);
+    try std.testing.expectEqual(command.begin_transaction, op.command[0]);
 }
 
 test "Wasm system info probe requests the full response buffer" {
@@ -1089,6 +1304,63 @@ test "T48 Wasm erase response status is validated" {
     var status = [_]u8{0} ** 32;
     status[0] = 1;
     try std.testing.expectError(error.ProgrammerStatusError, completeTransfer(&op, &status));
+}
+
+test "T48 Wasm accepts short-packet erase acknowledgement" {
+    var data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_erase,
+        .data = &data,
+    };
+    var response = [_]u8{0} ** packet.t48_erase_ack_len;
+    response[0] = command.erase;
+
+    try completeTransfer(&op, &response);
+    try std.testing.expectEqual(State.send_end_after_erase, op.state);
+}
+
+test "T48 Wasm rejects truncated erase acknowledgement" {
+    var data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_erase,
+        .data = &data,
+    };
+    var response = [_]u8{0} ** (packet.t48_erase_ack_len - 1);
+
+    try std.testing.expectError(error.ShortRead, completeTransfer(&op, &response));
+    try std.testing.expectEqual(@as(usize, response.len), op.short_read_actual);
+    try std.testing.expectEqual(@as(usize, packet.t48_erase_ack_len), op.short_read_required);
+}
+
+test "T48 Wasm rejects incomplete extended erase status" {
+    var data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_erase,
+        .data = &data,
+    };
+    var response = [_]u8{0} ** 12;
+
+    try std.testing.expectError(error.ShortRead, completeTransfer(&op, &response));
+    try std.testing.expectEqual(@as(usize, response.len), op.short_read_actual);
+    try std.testing.expectEqual(@as(usize, 13), op.short_read_required);
 }
 
 test "Wasm ShortRead errors report state and required length" {

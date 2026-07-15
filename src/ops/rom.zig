@@ -16,6 +16,7 @@ pub const Error = catalog.Error || protocol.Error || error{
     VerifyFailed,
     InputEmpty,
     EraseUnsupported,
+    TargetNotBlank,
 };
 
 pub const ReadOptions = struct {
@@ -59,13 +60,25 @@ pub fn readROM(
     const descriptor = device.descriptor(info.programmer);
     const ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
     defer ctx.deinit(allocator);
+    var read_ctx: ?protocol.BeginContext = null;
+    defer if (read_ctx) |restart| restart.deinit(allocator);
     var protocol_open = true;
     errdefer if (protocol_open) protocol.end(info.programmer, trans) catch {};
 
+    const check_id = shouldCheckChipId(device, .{
+        .skip = options.skip_id_check,
+        .continue_on_mismatch = options.continue_on_id_mismatch,
+    });
     try checkChipId(info.programmer, trans, device, .{
         .skip = options.skip_id_check,
         .continue_on_mismatch = options.continue_on_id_mismatch,
     });
+    if (check_id) {
+        try protocol.end(info.programmer, trans);
+        protocol_open = false;
+        read_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        protocol_open = true;
+    }
 
     var offset: usize = 0;
     const chunk_size = readChunkSize(info.programmer, descriptor);
@@ -104,18 +117,40 @@ pub fn writeROM(
     protocol_open = true;
     errdefer if (protocol_open) protocol.end(info.programmer, trans) catch {};
 
-    try checkChipId(info.programmer, trans, device, .{
+    const chip_id_policy = ChipIdPolicy{
         .skip = options.skip_id_check,
         .continue_on_mismatch = options.continue_on_id_mismatch,
-    });
+    };
+    const check_id = shouldCheckChipId(device, chip_id_policy);
+    try checkChipId(info.programmer, trans, device, chip_id_policy);
 
+    var post_id_ctx: ?protocol.BeginContext = null;
+    defer if (post_id_ctx) |ctx| ctx.deinit(allocator);
     var second_ctx: ?protocol.BeginContext = null;
     defer if (second_ctx) |ctx| ctx.deinit(allocator);
+    var post_blank_ctx: ?protocol.BeginContext = null;
+    defer if (post_blank_ctx) |ctx| ctx.deinit(allocator);
+    var verify_ctx: ?protocol.BeginContext = null;
+    defer if (verify_ctx) |ctx| ctx.deinit(allocator);
+    if (check_id) {
+        try protocol.end(info.programmer, trans);
+        protocol_open = false;
+        post_id_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        protocol_open = true;
+    }
     if (options.erase) {
         try protocol.erase(info.programmer, trans, options.erase_num_fuses, options.erase_pld);
         try protocol.end(info.programmer, trans);
         protocol_open = false;
         second_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        protocol_open = true;
+    }
+
+    if (!options.erase and !device.can_erase) {
+        try ensureBlank(allocator, info.programmer, trans, device, descriptor, options.memory, size);
+        try protocol.end(info.programmer, trans);
+        protocol_open = false;
+        post_blank_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
         protocol_open = true;
     }
 
@@ -128,7 +163,7 @@ pub fn writeROM(
     const chunk_size = @max(@as(usize, descriptor.write_buffer_size), 1);
     while (offset < data.len) {
         const len = @min(chunk_size, data.len - offset);
-        try protocol.writeBlock(info.programmer, trans, descriptor, options.memory, @intCast(offset), data[offset .. offset + len]);
+        try protocol.writeBlock(allocator, info.programmer, trans, descriptor, options.memory, @intCast(offset), data[offset .. offset + len]);
         const status = try protocol.requestStatus(info.programmer, trans);
         if (status.overcurrent != 0) return Error.Overcurrent;
         if (status.error_code != 0) return Error.ProgrammerStatusError;
@@ -136,6 +171,10 @@ pub fn writeROM(
     }
 
     if (options.verify) {
+        try protocol.end(info.programmer, trans);
+        protocol_open = false;
+        verify_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        protocol_open = true;
         var actual = try allocator.alloc(u8, data.len);
         defer allocator.free(actual);
         offset = 0;
@@ -173,9 +212,37 @@ const ChipIdPolicy = struct {
 };
 
 fn checkChipId(programmer: model.Programmer, trans: transport_mod.Transport, device: catalog.DeviceRecord, policy: ChipIdPolicy) Error!void {
-    if (policy.skip or device.chip_id == 0 or device.chip_id_bytes_count == 0) return;
+    if (!shouldCheckChipId(device, policy)) return;
     const actual = try protocol.getChipId(programmer, trans, device.chip_id_bytes_count);
     if (actual.value != device.chip_id and !policy.continue_on_mismatch) return Error.ChipIdMismatch;
+}
+
+fn shouldCheckChipId(device: catalog.DeviceRecord, policy: ChipIdPolicy) bool {
+    return !policy.skip and device.chip_id != 0 and device.chip_id_bytes_count != 0;
+}
+
+fn ensureBlank(
+    allocator: std.mem.Allocator,
+    programmer: model.Programmer,
+    trans: transport_mod.Transport,
+    device: catalog.DeviceRecord,
+    descriptor: t48.Device,
+    memory: model.MemoryKind,
+    size: usize,
+) Error!void {
+    const chunk_size = readChunkSize(programmer, descriptor);
+    const buffer = try allocator.alloc(u8, chunk_size);
+    defer allocator.free(buffer);
+    var offset: usize = 0;
+    while (offset < size) {
+        const len = @min(chunk_size, size - offset);
+        try protocol.readBlock(programmer, trans, memory, @intCast(offset), buffer[0..len]);
+        try checkReadStatus(programmer, trans);
+        for (buffer[0..len]) |byte| {
+            if (byte != device.blank_value) return Error.TargetNotBlank;
+        }
+        offset += len;
+    }
 }
 
 fn memorySize(device: catalog.DeviceRecord, memory: model.MemoryKind) usize {
@@ -226,6 +293,8 @@ test "deviceList exposes catalog summaries" {
     defer std.testing.allocator.free(found);
     try std.testing.expectEqual(@as(usize, 1), found.len);
     try std.testing.expectEqual(@as(u32, 8192), found[0].code_memory_size);
+    try std.testing.expect(found[0].supports_unprotect);
+    try std.testing.expect(found[0].supports_protect);
 }
 
 test "readROM uses session, begin transaction, and chunked reads" {
@@ -288,16 +357,22 @@ test "writeROM uses T48 write status and verify sequence" {
     response[12] = 0;
     @memcpy(response[24..32], "T48CODE!");
     @memcpy(response[32..54], "SERIAL-T48-00000000000");
-    var verify_payload = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
+    const write_data = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
+    var verify_payload = [_]u8{0} ** protocol_bytes.packet.t48_min_read_payload_len;
+    @memcpy(verify_payload[0..write_data.len], &write_data);
     var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
     fake.payload_response = &verify_payload;
     defer fake.deinit();
 
-    try writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &verify_payload, .{ .programmer = .t48, .erase = false, .skip_id_check = true });
+    try writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &write_data, .{ .programmer = .t48, .erase = false, .skip_id_check = true });
 
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
-    try std.testing.expectEqualSlices(u8, &verify_payload, fake.payload_sent.items);
+    try std.testing.expectEqualSlices(u8, &write_data, fake.payload_sent.items[0..write_data.len]);
+    try std.testing.expect(std.mem.allEqual(u8, fake.payload_sent.items[write_data.len..], 0));
+    try std.testing.expectEqual(protocol_bytes.command.end_transaction, fake.sent.items[93]);
+    try std.testing.expectEqual(protocol_bytes.command.begin_transaction, fake.sent.items[101]);
+    try std.testing.expectEqual(protocol_bytes.command.read_code, fake.sent.items[173]);
 }
 
 test "writeROM reports verify mismatch for T48" {
@@ -309,7 +384,7 @@ test "writeROM reports verify mismatch for T48" {
     response[12] = 0;
     @memcpy(response[24..32], "T48CODE!");
     @memcpy(response[32..54], "SERIAL-T48-00000000000");
-    var verify_payload = [_]u8{ 0xff, 0xff, 0xff, 0xff };
+    var verify_payload = [_]u8{0xff} ** protocol_bytes.packet.t48_min_read_payload_len;
     var data = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
     var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
     fake.payload_response = &verify_payload;
@@ -342,4 +417,27 @@ test "writeROM rejects electrical erase for UV EPROM before begin transaction" {
         writeROM(std.testing.allocator, fake.transport(), "M27C64A@DIP28", &data, .{ .programmer = .t48 }),
     );
     try std.testing.expectEqual(@as(usize, protocol_bytes.packet.system_info_request_len), fake.sent.items.len);
+}
+
+test "writeROM rejects a nonblank UV EPROM before programming" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[6] = 7;
+    var target = [_]u8{0xff} ** 8192;
+    target[0] = 0;
+    var data = [_]u8{0xaa} ** 8192;
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    fake.payload_response = &target;
+    defer fake.deinit();
+
+    try std.testing.expectError(
+        Error.TargetNotBlank,
+        writeROM(std.testing.allocator, fake.transport(), "M27C64A@DIP28", &data, .{
+            .programmer = .t48,
+            .erase = false,
+            .skip_id_check = true,
+        }),
+    );
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) == null);
 }
