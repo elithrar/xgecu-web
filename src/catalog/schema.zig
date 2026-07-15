@@ -23,6 +23,7 @@ pub const DeviceRecord = struct {
     read_buffer_size: u16,
     write_buffer_size: u16,
     flags_raw: u32,
+    can_erase: bool,
     can_adjust_clock: bool = false,
     chip_id: u32 = 0,
     chip_id_bytes_count: u8 = 0,
@@ -65,6 +66,7 @@ pub const DeviceSummary = struct {
     chip_id: u32,
     chip_id_bytes_count: u8,
     blank_value: u8,
+    can_erase: bool,
     supports_t48: bool,
     supports_t56: bool,
 };

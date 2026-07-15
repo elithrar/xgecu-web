@@ -15,6 +15,7 @@ pub const Error = catalog.Error || protocol.Error || error{
     ChipIdMismatch,
     VerifyFailed,
     InputEmpty,
+    EraseUnsupported,
 };
 
 pub const ReadOptions = struct {
@@ -94,6 +95,7 @@ pub fn writeROM(
     if (data.len > size) return Error.InputTooLarge;
     if (options.erase and options.memory != .code) return Error.InputTooLarge;
     if (options.erase and data.len != size) return Error.InputTooLarge;
+    if (options.erase and !device.can_erase) return Error.EraseUnsupported;
 
     const descriptor = device.descriptor(info.programmer);
     var protocol_open = false;
@@ -273,7 +275,7 @@ test "readROM reports chip ID mismatch before reading payload" {
     var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
     defer fake.deinit();
 
-    try std.testing.expectError(Error.ChipIdMismatch, readROM(std.testing.allocator, fake.transport(), "W25Q32JV@SOIC8", .{ .programmer = .t48 }));
+    try std.testing.expectError(Error.ChipIdMismatch, readROM(std.testing.allocator, fake.transport(), "M27C64A@DIP28", .{ .programmer = .t48 }));
     try std.testing.expectEqual(@as(usize, 0), fake.payload_sent.items.len);
 }
 
@@ -324,5 +326,20 @@ test "writeROM rejects partial data before an erase transaction" {
     defer fake.deinit();
 
     try std.testing.expectError(Error.InputTooLarge, writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &.{0xaa}, .{ .programmer = .t48 }));
+    try std.testing.expectEqual(@as(usize, protocol_bytes.packet.system_info_request_len), fake.sent.items.len);
+}
+
+test "writeROM rejects electrical erase for UV EPROM before begin transaction" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[6] = 7;
+    var data = [_]u8{0xff} ** 8192;
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    try std.testing.expectError(
+        Error.EraseUnsupported,
+        writeROM(std.testing.allocator, fake.transport(), "M27C64A@DIP28", &data, .{ .programmer = .t48 }),
+    );
     try std.testing.expectEqual(@as(usize, protocol_bytes.packet.system_info_request_len), fake.sent.items.len);
 }

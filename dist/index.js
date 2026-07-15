@@ -713,6 +713,7 @@ var Oe = (e) => e.status === "ok" ? {
 			if (t.data.byteLength > r) throw new e("writeROM data is larger than the selected memory region.", "InputTooLarge");
 			if ((t.erase ?? !0) && (t.memory ?? "code") !== "code") throw new e("Erase writes are restricted to full code-memory images because erase scope is device-specific.", "InvalidInput");
 			if ((t.erase ?? !0) && t.data.byteLength !== r) throw new e("writeROM data must match the selected memory region when erase is enabled.", "InputTooLarge");
+			if ((t.erase ?? !0) && !n.canErase) throw new e("The selected device cannot be electrically erased. Externally erase and blank-check it, then write with erase: false.", "InvalidInput");
 			await N(t.programmer.device);
 			let i = this.wasm.startWriteROM({
 				programmer: t.programmerKind ?? "auto",

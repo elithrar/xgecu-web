@@ -14,6 +14,8 @@ export interface DeviceSummary {
   chipId: number;
   chipIdBytesCount: number;
   blankValue: number;
+  /** Whether the programmer can electrically erase this target. */
+  canErase: boolean;
   supportsT48: boolean;
   supportsT56: boolean;
 }

@@ -3,11 +3,24 @@
   "$id": "https://xgecu-web.local/catalog.schema.json",
   "title": "XGecu WebUSB catalog source",
   "type": "object",
-  "required": ["devices"],
+  "required": ["provenance", "devices"],
   "additionalProperties": false,
   "properties": {
     "$schema": {
       "type": "string"
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["project", "repository", "revision", "file", "database", "vendorVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "project": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "database": { "type": "string", "minLength": 1 },
+        "vendorVersion": { "type": "string", "minLength": 1 }
+      }
     },
     "devices": {
       "type": "array",
@@ -31,7 +44,8 @@
           "packageDetailsRaw",
           "readBufferSize",
           "writeBufferSize",
-          "flagsRaw"
+          "flagsRaw",
+          "canErase"
         ],
         "additionalProperties": false,
         "properties": {
@@ -61,6 +75,7 @@
           "readBufferSize": { "$ref": "#/$defs/uint" },
           "writeBufferSize": { "$ref": "#/$defs/uint" },
           "flagsRaw": { "$ref": "#/$defs/uint" },
+          "canErase": { "type": "boolean" },
           "canAdjustClock": { "type": "boolean" },
           "chipId": { "$ref": "#/$defs/uint" },
           "chipIdBytesCount": { "$ref": "#/$defs/uint" },

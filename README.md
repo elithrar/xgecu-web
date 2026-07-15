@@ -78,7 +78,7 @@ try {
 }
 ```
 
-See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, read a ROM, download the readback, and write a selected binary image with erase + verify after a backup and image-length check.
+See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, read a ROM, download the readback, and write a selected binary image with target-appropriate erase behavior plus verification after a backup and image-length check.
 
 For a complete browser example that backs up and writes a 28-pin EEPROM, see `docs/examples.md`.
 
@@ -126,7 +126,7 @@ The current JSON source is intentionally small seed data and should be expanded 
 
 ## Hardware safety
 
-- `writeROM` is always hardware-affecting and potentially destructive; `erase: true` additionally erases the selected memory region before programming.
+- `writeROM` is always hardware-affecting and potentially destructive; `erase: true` additionally erases targets whose catalog metadata has `canErase: true`. UV EPROMs require external erasure, a blank readback, and explicit `erase: false`.
 - Erase writes are restricted to code memory and require a full image exactly matching that region.
 - Keep `verify: true` unless you have an external verification process.
 - Read and save a backup before writing.

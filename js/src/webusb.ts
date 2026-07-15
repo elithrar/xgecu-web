@@ -181,6 +181,12 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       if ((options.erase ?? true) && options.data.byteLength !== size) {
         throw new XgecuWebUSBError("writeROM data must match the selected memory region when erase is enabled.", "InputTooLarge");
       }
+      if ((options.erase ?? true) && !device.canErase) {
+        throw new XgecuWebUSBError(
+          "The selected device cannot be electrically erased. Externally erase and blank-check it, then write with erase: false.",
+          "InvalidInput"
+        );
+      }
       await ensureReady(options.programmer.device);
       const handle = this.wasm.startWriteROM({
         programmer: options.programmerKind ?? "auto",

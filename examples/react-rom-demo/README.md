@@ -21,7 +21,7 @@ The demo is intentionally conservative:
 - It requires a successful `readROM` before write is enabled.
 - It provides a readback download link so the first backup can be saved before modification.
 - It disables write when the selected image length does not match the readback length.
-- It keeps `erase: true` and `verify: true` explicit for writes.
+- It uses the target's `canErase` metadata, requires a blank readback for externally erased targets, and keeps `verify: true` explicit.
 - It resets the readback/write confirmation when the selected device changes.
 - It closes the programmer connection when the React component unmounts.
 
