@@ -41,9 +41,15 @@ export type UsbTransferHandler = (transfer: UsbTransfer) => Promise<Uint8Array |
 export interface RunOperationOptions {
     signal?: AbortSignal;
     onProgress?: RomProgressHandler;
+    onCleanupFailure?: () => void;
 }
+declare const wasmOperationHandleBrand: unique symbol;
+export type WasmOperationHandle = number & {
+    readonly [wasmOperationHandleBrand]: true;
+};
 export declare class WasmBridge {
     private readonly exports;
+    private readonly operations;
     constructor(exports: WasmExports);
     static load(wasmUrl?: string | URL): Promise<WasmBridge>;
     deviceList(query?: DeviceListQuery): DeviceSummary[];
@@ -54,7 +60,7 @@ export declare class WasmBridge {
         memory: MemoryKind;
         skipIdCheck: boolean;
         continueOnIdMismatch: boolean;
-    }): number;
+    }): WasmOperationHandle;
     startWriteROM(options: {
         programmer: ProgrammerKind;
         device: string;
@@ -68,8 +74,9 @@ export declare class WasmBridge {
         continueOnIdMismatch: boolean;
         unprotectBefore: boolean;
         protectAfter: boolean;
-    }): number;
-    runOperation(handle: number, performTransfer: UsbTransferHandler, options?: RunOperationOptions): Promise<Uint8Array>;
+    }): WasmOperationHandle;
+    disposeOperation(handle: WasmOperationHandle): void;
+    runOperation(handle: WasmOperationHandle, performTransfer: UsbTransferHandler, options?: RunOperationOptions): Promise<Uint8Array>;
     memoryBytes(ptr: number, len: number): Uint8Array;
     private withBytes;
     private resultBytes;
@@ -78,10 +85,11 @@ export declare class WasmBridge {
     private throwIfError;
     private operationError;
     private operationProgress;
-    private failTransferAndCleanupBestEffort;
+    private registerOperation;
     private drainCleanupBestEffort;
     private drainCleanup;
 }
 export declare function programmerToAbi(programmer: ProgrammerKind): number;
 export declare function memoryToAbi(memory: MemoryKind): number;
+export {};
 //# sourceMappingURL=wasm.d.ts.map

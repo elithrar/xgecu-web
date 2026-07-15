@@ -18,7 +18,8 @@ export type XgecuErrorCode =
   | "OperationAborted"
   | "OperationInProgress"
   | "InvalidInput"
-  | "ShortRead";
+  | "ShortRead"
+  | "TargetNotBlank";
 
 export class XgecuWebUSBError extends Error {
   constructor(message: string, readonly code: XgecuErrorCode = "Unknown", readonly cause?: unknown) {
@@ -79,6 +80,8 @@ export function xgecuErrorCodeFromAbi(code: number): XgecuErrorCode {
       return "WebUSBTransferFailed";
     case 24:
       return "ShortRead";
+    case 25:
+      return "TargetNotBlank";
     default:
       return "Unknown";
   }

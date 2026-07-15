@@ -66,9 +66,9 @@ pub fn readBlock(programmer: model.Programmer, trans: transport.Transport, kind:
     };
 }
 
-pub fn writeBlock(programmer: model.Programmer, trans: transport.Transport, descriptor: t48.Device, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
+pub fn writeBlock(allocator: std.mem.Allocator, programmer: model.Programmer, trans: transport.Transport, descriptor: t48.Device, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
     return switch (programmer) {
-        .t48 => t48.writeBlock(trans, kind, address, data),
+        .t48 => t48.writeBlock(allocator, trans, descriptor, kind, address, data),
         .t56 => t56.writeBlock(trans, descriptor, kind, address, data),
         else => Error.UnsupportedProgrammer,
     };

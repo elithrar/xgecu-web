@@ -126,13 +126,14 @@ The current JSON source is intentionally small seed data and should be expanded 
 
 ## Hardware safety
 
-- `writeROM` is always hardware-affecting and potentially destructive; `erase: true` additionally erases targets whose catalog metadata has `canErase: true`. UV EPROMs require external erasure, a blank readback, and explicit `erase: false`.
+- `writeROM` is always hardware-affecting and potentially destructive; `erase: true` additionally erases targets whose catalog metadata has `canErase: true`. UV EPROMs require external erasure and explicit `erase: false`; the write operation performs a full blank check before programming.
 - Erase writes are restricted to code memory and require a full image exactly matching that region.
 - Keep `verify: true` unless you have an external verification process.
 - Read and save a backup before writing.
 - Compare the patched image byte length with the readback byte length before writing.
 - Confirm the exact package/adapter before writing.
 - Leave chip ID checks enabled unless you have an independent target-identification step.
+- Apply the resolved target's explicit write-protection metadata when programming.
 - Browser permission prompts only grant access to the programmer; the library cannot detect an incorrectly inserted ROM.
 
 ### Credits

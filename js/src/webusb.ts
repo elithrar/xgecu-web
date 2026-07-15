@@ -27,6 +27,7 @@ interface DeviceState {
   lifecycleActive: boolean;
   openedByLibrary: boolean;
   operations: number;
+  poisoned: boolean;
   references: number;
   sessionEstablished: boolean;
 }
@@ -89,9 +90,13 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
         // Closing is the cleanup path; a stale claimed-interface state should not keep the device open.
       }
       this.state.claimed = false;
-      if (this.device.opened && this.state.openedByLibrary) await this.device.close();
+      if (this.device.opened && (this.state.openedByLibrary || this.state.poisoned)) await this.device.close();
+      if (this.state.poisoned && this.device.opened) {
+        throw new XgecuWebUSBError("Failed to reset the programmer after transaction cleanup failed.", "WebUSBLifecycleFailed");
+      }
       this.state.openedByLibrary = false;
       this.state.references = 0;
+      this.state.poisoned = false;
       this.state.sessionEstablished = false;
       this.closed = true;
     } finally {
@@ -148,18 +153,30 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
     validateConnection(options.programmer);
     validateReadOptions(options);
     throwIfAborted(options.signal);
-    return withProgrammerOperation(options.programmer.device, async () => {
-      await ensureReady(options.programmer.device);
+    const operation = {
+      programmer: options.programmer,
+      programmerKind: options.programmerKind ?? "auto",
+      device: options.device,
+      memory: options.memory ?? "code",
+      skipIdCheck: options.skipIdCheck ?? false,
+      continueOnIdMismatch: options.continueOnIdMismatch ?? false,
+      signal: options.signal,
+      onProgress: options.onProgress
+    } as const;
+    const usbDevice = operation.programmer.device;
+    return withProgrammerOperation(usbDevice, async () => {
+      await ensureReady(usbDevice);
       const handle = this.wasm.startReadROM({
-        programmer: options.programmerKind ?? "auto",
-        device: options.device,
-        memory: options.memory ?? "code",
-        skipIdCheck: options.skipIdCheck ?? false,
-        continueOnIdMismatch: options.continueOnIdMismatch ?? false
+        programmer: operation.programmerKind,
+        device: operation.device,
+        memory: operation.memory,
+        skipIdCheck: operation.skipIdCheck,
+        continueOnIdMismatch: operation.continueOnIdMismatch
       });
-      return this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(options.programmer.device, transfer), {
-        signal: options.signal,
-        onProgress: options.onProgress
+      return this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(usbDevice, transfer), {
+        signal: operation.signal,
+        onProgress: operation.onProgress,
+        onCleanupFailure: () => markProgrammerPoisoned(usbDevice)
       });
     });
   }
@@ -168,43 +185,62 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
     validateConnection(options.programmer);
     validateWriteOptions(options);
     throwIfAborted(options.signal);
-    if (options.data.byteLength === 0) throw new XgecuWebUSBError("writeROM data must not be empty.", "InputTooLarge");
-    return withProgrammerOperation(options.programmer.device, async () => {
-      const device = this.wasm.resolveDevice(options.device, options.programmerKind ?? "auto");
+    const operation = {
+      programmer: options.programmer,
+      programmerKind: options.programmerKind ?? "auto",
+      device: options.device,
+      data: options.data.slice(),
+      memory: options.memory ?? "code",
+      erase: options.erase ?? true,
+      eraseNumFuses: options.eraseNumFuses ?? 0,
+      erasePld: options.erasePld ?? 0,
+      verify: options.verify ?? true,
+      skipIdCheck: options.skipIdCheck ?? false,
+      continueOnIdMismatch: options.continueOnIdMismatch ?? false,
+      unprotectBefore: options.unprotectBefore ?? false,
+      protectAfter: options.protectAfter ?? false,
+      signal: options.signal,
+      onProgress: options.onProgress
+    } as const;
+    if (operation.data.byteLength === 0) throw new XgecuWebUSBError("writeROM data must not be empty.", "InputTooLarge");
+    const usbDevice = operation.programmer.device;
+    return withProgrammerOperation(usbDevice, async () => {
+      const device = this.wasm.resolveDevice(operation.device, operation.programmerKind);
       if (!device) throw new XgecuWebUSBError("Device not found or unsupported by requested programmer.", "DeviceNotFound");
-      const size = memorySize(device, options.memory ?? "code");
+      const size = memorySize(device, operation.memory);
       if (size === 0) throw new XgecuWebUSBError("Selected memory region is empty.", "EmptyMemoryRegion");
-      if (options.data.byteLength > size) throw new XgecuWebUSBError("writeROM data is larger than the selected memory region.", "InputTooLarge");
-      if ((options.erase ?? true) && (options.memory ?? "code") !== "code") {
+      if (operation.data.byteLength > size) throw new XgecuWebUSBError("writeROM data is larger than the selected memory region.", "InputTooLarge");
+      if (operation.erase && operation.memory !== "code") {
         throw new XgecuWebUSBError("Erase writes are restricted to full code-memory images because erase scope is device-specific.", "InvalidInput");
       }
-      if ((options.erase ?? true) && options.data.byteLength !== size) {
+      if (operation.erase && operation.data.byteLength !== size) {
         throw new XgecuWebUSBError("writeROM data must match the selected memory region when erase is enabled.", "InputTooLarge");
       }
-      if ((options.erase ?? true) && !device.canErase) {
+      if (operation.erase && !device.canErase) {
         throw new XgecuWebUSBError(
           "The selected device cannot be electrically erased. Externally erase and blank-check it, then write with erase: false.",
           "InvalidInput"
         );
       }
-      await ensureReady(options.programmer.device);
+      await ensureReady(usbDevice);
       const handle = this.wasm.startWriteROM({
-        programmer: options.programmerKind ?? "auto",
-        device: options.device,
-        memory: options.memory ?? "code",
-        data: options.data,
-        erase: options.erase ?? true,
-        eraseNumFuses: options.eraseNumFuses ?? 0,
-        erasePld: options.erasePld ?? 0,
-        verify: options.verify ?? true,
-        skipIdCheck: options.skipIdCheck ?? false,
-        continueOnIdMismatch: options.continueOnIdMismatch ?? false,
-        unprotectBefore: options.unprotectBefore ?? false,
-        protectAfter: options.protectAfter ?? false
+        programmer: operation.programmerKind,
+        device: operation.device,
+        memory: operation.memory,
+        data: operation.data,
+        erase: operation.erase,
+        eraseNumFuses: operation.eraseNumFuses,
+        erasePld: operation.erasePld,
+        verify: operation.verify,
+        skipIdCheck: operation.skipIdCheck,
+        continueOnIdMismatch: operation.continueOnIdMismatch,
+        unprotectBefore: operation.unprotectBefore,
+        protectAfter: operation.protectAfter
       });
-      await this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(options.programmer.device, transfer), {
-        signal: options.signal,
-        onProgress: options.onProgress
+      await this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(usbDevice, transfer), {
+        signal: operation.signal,
+        onProgress: operation.onProgress,
+        onCleanupFailure: () => markProgrammerPoisoned(usbDevice)
       });
     });
   }
@@ -261,9 +297,22 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
   if (forOperation && !device.opened && state.sessionEstablished) {
     throw new XgecuWebUSBError("The programmer connection was lost. Reconnect before starting another ROM operation.", "WebUSBLifecycleFailed");
   }
+  if (forOperation && state.poisoned) {
+    throw new XgecuWebUSBError("The programmer is in an unknown transaction state. Reconnect before starting another ROM operation.", "WebUSBLifecycleFailed");
+  }
   state.lifecycleActive = true;
   let openedHere = false;
   try {
+    if (!forOperation && state.poisoned) {
+      if (device.opened && state.claimed) await device.releaseInterface?.(INTERFACE_NUMBER).catch(() => undefined);
+      state.claimed = false;
+      if (device.opened) await lifecycle("reset the programmer after transaction cleanup failed", () => device.close());
+      if (device.opened) {
+        throw new XgecuWebUSBError("The programmer remained open after reset. Disconnect and reconnect it before continuing.", "WebUSBLifecycleFailed");
+      }
+      state.openedByLibrary = false;
+      state.sessionEstablished = false;
+    }
     if (!device.opened) {
       state.claimed = false;
       await lifecycle("open USB device", () => device.open());
@@ -279,6 +328,7 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
       state.claimed = true;
     }
     await ensureEndpointAlternate(device);
+    state.poisoned = false;
     state.sessionEstablished = true;
   } catch (error) {
     if (state.claimed) await device.releaseInterface?.(INTERFACE_NUMBER).catch(() => undefined);
@@ -333,7 +383,7 @@ function connectionFor(device: USBDeviceLike): ProgrammerConnection {
 function stateFor(device: USBDeviceLike): DeviceState {
   let state = deviceStates.get(device);
   if (!state) {
-    state = { claimed: false, lifecycleActive: false, openedByLibrary: false, operations: 0, references: 0, sessionEstablished: false };
+    state = { claimed: false, lifecycleActive: false, openedByLibrary: false, operations: 0, poisoned: false, references: 0, sessionEstablished: false };
     deviceStates.set(device, state);
   }
   return state;
@@ -384,10 +434,23 @@ async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Pro
   try {
     return unwrapInternal(Result.ok(await task()));
   } catch (error) {
+    if (state.poisoned) await quarantineProgrammer(device, state);
     throw unwrapInternal(Result.err(xgecuErrorFromUnknown(error)));
   } finally {
     state.operations -= 1;
   }
+}
+
+function markProgrammerPoisoned(device: USBDeviceLike): void {
+  stateFor(device).poisoned = true;
+}
+
+async function quarantineProgrammer(device: USBDeviceLike, state: DeviceState): Promise<void> {
+  if (device.opened && state.claimed) await device.releaseInterface?.(INTERFACE_NUMBER).catch(() => undefined);
+  if (device.opened) await device.close().catch(() => undefined);
+  state.claimed = false;
+  if (!device.opened) state.openedByLibrary = false;
+  state.sessionEstablished = false;
 }
 
 function validateConnection(programmer: ProgrammerConnection): void {

@@ -55,12 +55,18 @@ export type UsbTransferHandler = (transfer: UsbTransfer) => Promise<Uint8Array |
 export interface RunOperationOptions {
   signal?: AbortSignal;
   onProgress?: RomProgressHandler;
+  onCleanupFailure?: () => void;
 }
+
+declare const wasmOperationHandleBrand: unique symbol;
+export type WasmOperationHandle = number & { readonly [wasmOperationHandleBrand]: true };
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 export class WasmBridge {
+  private readonly operations = new Map<WasmOperationHandle, "ready" | "running">();
+
   constructor(private readonly exports: WasmExports) {}
 
   static async load(wasmUrl?: string | URL): Promise<WasmBridge> {
@@ -89,7 +95,7 @@ export class WasmBridge {
     });
   }
 
-  startReadROM(options: { programmer: ProgrammerKind; device: string; memory: MemoryKind; skipIdCheck: boolean; continueOnIdMismatch: boolean }): number {
+  startReadROM(options: { programmer: ProgrammerKind; device: string; memory: MemoryKind; skipIdCheck: boolean; continueOnIdMismatch: boolean }): WasmOperationHandle {
     const programmer = programmerToAbi(options.programmer);
     const memory = memoryToAbi(options.memory);
     requireBoolean(options.skipIdCheck, "skipIdCheck");
@@ -105,7 +111,7 @@ export class WasmBridge {
         options.continueOnIdMismatch ? 1 : 0
       );
       if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start readROM operation.");
-      return handle;
+      return this.registerOperation(handle);
     });
   }
 
@@ -122,7 +128,7 @@ export class WasmBridge {
     continueOnIdMismatch: boolean;
     unprotectBefore: boolean;
     protectAfter: boolean;
-  }): number {
+  }): WasmOperationHandle {
     const programmer = programmerToAbi(options.programmer);
     const memory = memoryToAbi(options.memory);
     if (!(options.data instanceof Uint8Array)) throw new XgecuWebUSBError("data must be a Uint8Array.", "InvalidInput");
@@ -156,14 +162,28 @@ export class WasmBridge {
           options.protectAfter ? 1 : 0
         );
         if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start writeROM operation.");
-        return handle;
+        return this.registerOperation(handle);
       })
     );
   }
 
-  async runOperation(handle: number, performTransfer: UsbTransferHandler, options: RunOperationOptions = {}): Promise<Uint8Array> {
+  disposeOperation(handle: WasmOperationHandle): void {
+    const state = this.operations.get(handle);
+    if (!state) return;
+    if (state === "running") {
+      throw new XgecuWebUSBError("The Wasm operation is currently running.", "OperationInProgress");
+    }
+    this.operations.delete(handle);
+    this.exports.mp_operation_destroy(handle);
+  }
+
+  async runOperation(handle: WasmOperationHandle, performTransfer: UsbTransferHandler, options: RunOperationOptions = {}): Promise<Uint8Array> {
+    const state = this.operations.get(handle);
+    if (state === "running") throw new XgecuWebUSBError("The Wasm operation is already running.", "OperationInProgress");
+    if (state !== "ready") throw new XgecuWebUSBError("The Wasm operation handle is invalid or already consumed.", "InvalidInput");
+    this.operations.set(handle, "running");
     let lastProgress: RomProgressEvent | undefined;
-    const emitProgress = () => {
+    const emitProgress = async () => {
       if (!options.onProgress) return;
       const progress = this.operationProgress(handle);
       if (
@@ -172,7 +192,7 @@ export class WasmBridge {
         lastProgress.total === progress.total
       ) return;
       lastProgress = progress;
-      options.onProgress(progress);
+      await options.onProgress(progress);
     };
 
     try {
@@ -185,7 +205,7 @@ export class WasmBridge {
         const kind = this.exports.mp_operation_next(handle);
         if (kind === 0) {
           this.throwIfError(this.exports.mp_operation_result(handle));
-          emitProgress();
+          await emitProgress();
           return this.operationResultBytes(handle).slice();
         }
         if (kind === 1) {
@@ -194,7 +214,7 @@ export class WasmBridge {
           try {
             await performTransfer({ direction: "out", endpoint, data });
           } catch (error) {
-            await this.failTransferAndCleanupBestEffort(handle, performTransfer);
+            this.exports.mp_operation_complete(handle, 1, 0, 0);
             throw error;
           }
           const rc = this.exports.mp_operation_complete(handle, 0, 0, 0);
@@ -202,7 +222,7 @@ export class WasmBridge {
             await this.drainCleanupBestEffort(handle, performTransfer);
             throw this.operationError(handle);
           }
-          emitProgress();
+          await emitProgress();
           continue;
         }
         if (kind === 2) {
@@ -212,7 +232,7 @@ export class WasmBridge {
           try {
             result = await performTransfer({ direction: "in", endpoint, length });
           } catch (error) {
-            await this.failTransferAndCleanupBestEffort(handle, performTransfer);
+            this.exports.mp_operation_complete(handle, 1, 0, 0);
             throw error;
           }
           const bytes = result instanceof Uint8Array ? result : new Uint8Array();
@@ -224,16 +244,28 @@ export class WasmBridge {
             await this.drainCleanupBestEffort(handle, performTransfer);
             throw this.operationError(handle);
           }
-          emitProgress();
+          await emitProgress();
           continue;
         }
         throw this.operationError(handle);
       }
     } catch (error) {
       this.exports.mp_operation_abort(handle);
-      await this.drainCleanupBestEffort(handle, performTransfer);
+      if (!(await this.drainCleanupBestEffort(handle, performTransfer))) {
+        try {
+          options.onCleanupFailure?.();
+        } catch {
+          // Preserve the lifecycle failure even if a caller's notification hook fails.
+        }
+        throw new XgecuWebUSBError(
+          "The ROM operation failed and the programmer transaction could not be closed. Reconnect the programmer before continuing.",
+          "WebUSBLifecycleFailed",
+          error
+        );
+      }
       throw error;
     } finally {
+      this.operations.delete(handle);
       this.exports.mp_operation_destroy(handle);
     }
   }
@@ -290,23 +322,27 @@ export class WasmBridge {
     };
   }
 
-  private async failTransferAndCleanupBestEffort(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
-    this.exports.mp_operation_complete(handle, 1, 0, 0);
-    await this.drainCleanupBestEffort(handle, performTransfer);
+  private registerOperation(rawHandle: number): WasmOperationHandle {
+    const handle = rawHandle as WasmOperationHandle;
+    if (this.operations.has(handle)) {
+      throw new XgecuWebUSBError("Wasm returned an operation handle that is already active.");
+    }
+    this.operations.set(handle, "ready");
+    return handle;
   }
 
-  private async drainCleanupBestEffort(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
+  private async drainCleanupBestEffort(handle: WasmOperationHandle, performTransfer: UsbTransferHandler): Promise<boolean> {
     try {
-      await this.drainCleanup(handle, performTransfer);
+      return await this.drainCleanup(handle, performTransfer);
     } catch {
-      // Cleanup is best effort after a failure or abort; preserve the original error.
+      return false;
     }
   }
 
-  private async drainCleanup(handle: number, performTransfer: UsbTransferHandler): Promise<void> {
+  private async drainCleanup(handle: WasmOperationHandle, performTransfer: UsbTransferHandler): Promise<boolean> {
     for (let step = 0; step < 4; step += 1) {
       const kind = this.exports.mp_operation_next(handle);
-      if (kind === 0 || kind === 3) return;
+      if (kind === 0 || kind === 3) return true;
       if (kind === 1) {
         const endpoint = this.exports.mp_transfer_endpoint(handle);
         const data = this.memoryBytes(this.exports.mp_transfer_ptr(handle), this.exports.mp_transfer_len(handle)).slice();
@@ -324,6 +360,7 @@ export class WasmBridge {
         });
       }
     }
+    return false;
   }
 }
 

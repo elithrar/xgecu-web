@@ -64,6 +64,8 @@ try {
     data: patched,
     erase: true,
     verify: true,
+    unprotectBefore: false,
+    protectAfter: false,
     signal: abortController.signal,
     onProgress: ({ phase, offset, total }) => {
       console.log(`${phase}: ${offset}/${total}`);
@@ -106,6 +108,7 @@ Keep these checks in your app:
 - Confirm chip orientation and adapter/pinout; WebUSB permission cannot validate the inserted target.
 - Confirm the downloaded backup was saved before continuing.
 - Keep `verify: true`.
+- Use the target's protection capability metadata to validate explicit write options. Do not automatically re-protect a chip after writing.
 - Compare the patched image length to the readback length before writing.
 - Do not set `skipIdCheck` unless the catalog lacks an ID for the exact chip and you have another way to confirm the device.
 - Treat `Overcurrent`, `ProgrammerStatusError`, and `VerifyFailed` as hard stops that require physical inspection before retrying.

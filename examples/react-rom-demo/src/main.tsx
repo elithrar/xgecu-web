@@ -265,6 +265,8 @@ function App() {
       image_bytes: writeImage.byteLength,
       erase: selectedSummary.canErase,
       verify: true,
+      unprotect_before: false,
+      protect_after: false,
       skip_id_check: skipIdCheck,
       programmer: programmerFields(programmer)
     });
@@ -275,6 +277,8 @@ function App() {
         data: writeImage,
         erase: selectedSummary.canErase,
         verify: true,
+        unprotectBefore: false,
+        protectAfter: false,
         skipIdCheck,
         signal: controller.signal,
         onProgress: (event) => {

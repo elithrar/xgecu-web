@@ -1,4 +1,4 @@
-export type XgecuErrorCode = "Unknown" | "WebUSBUnavailable" | "WebUSBTransferFailed" | "WebUSBLifecycleFailed" | "UnsupportedProgrammer" | "ProgrammerMismatch" | "DeviceNotFound" | "ChipIdMismatch" | "Overcurrent" | "ProgrammerStatusError" | "VerifyFailed" | "AlgorithmUnavailable" | "PayloadBufferTooSmall" | "EmptyMemoryRegion" | "InputTooLarge" | "ProgrammerInBootloader" | "OperationAborted" | "OperationInProgress" | "InvalidInput" | "ShortRead";
+export type XgecuErrorCode = "Unknown" | "WebUSBUnavailable" | "WebUSBTransferFailed" | "WebUSBLifecycleFailed" | "UnsupportedProgrammer" | "ProgrammerMismatch" | "DeviceNotFound" | "ChipIdMismatch" | "Overcurrent" | "ProgrammerStatusError" | "VerifyFailed" | "AlgorithmUnavailable" | "PayloadBufferTooSmall" | "EmptyMemoryRegion" | "InputTooLarge" | "ProgrammerInBootloader" | "OperationAborted" | "OperationInProgress" | "InvalidInput" | "ShortRead" | "TargetNotBlank";
 export declare class XgecuWebUSBError extends Error {
     readonly code: XgecuErrorCode;
     readonly cause?: unknown | undefined;
