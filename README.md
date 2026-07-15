@@ -6,13 +6,34 @@ This package is intentionally scoped to T48 and T56 hardware, with a Zig core, a
 
 T56 protocol support is implemented, but the seed catalog currently contains no validated T56 device records or algorithm payloads. High-level T56 ROM operations remain unavailable until those records are added; current catalog-backed examples target T48.
 
-## Install/build from source
+## Install as a dependency
+
+Install the tagged release directly from GitHub until the package is published to the npm registry. Run one of these commands from your application's root:
 
 ```sh
-pnpm install
-pnpm build
-pnpm test
+npm install "github:elithrar/xgecu-web#v0.1.0"
 ```
+
+```sh
+pnpm add "github:elithrar/xgecu-web#v0.1.0"
+```
+
+Both commands add `xgecu-web` to your application's dependencies and pin it to the `v0.1.0` tag.
+
+## Build from source
+
+Building requires Node.js 22, pnpm 9.15.4, and Zig 0.16.0. To build the tagged release:
+
+```sh
+git clone --branch v0.1.0 --depth 1 https://github.com/elithrar/xgecu-web.git
+cd xgecu-web
+corepack enable
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm run test
+```
+
+The browser package, TypeScript declarations, and Wasm module are written to `dist/`.
 
 Useful pnpm scripts:
 
