@@ -111,6 +111,8 @@ pub fn writeROM(
 
     var second_ctx: ?protocol.BeginContext = null;
     defer if (second_ctx) |ctx| ctx.deinit(allocator);
+    var verify_ctx: ?protocol.BeginContext = null;
+    defer if (verify_ctx) |ctx| ctx.deinit(allocator);
     if (options.erase) {
         try protocol.erase(info.programmer, trans, options.erase_num_fuses, options.erase_pld);
         try protocol.end(info.programmer, trans);
@@ -136,6 +138,10 @@ pub fn writeROM(
     }
 
     if (options.verify) {
+        try protocol.end(info.programmer, trans);
+        protocol_open = false;
+        verify_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        protocol_open = true;
         var actual = try allocator.alloc(u8, data.len);
         defer allocator.free(actual);
         offset = 0;
@@ -298,6 +304,9 @@ test "writeROM uses T48 write status and verify sequence" {
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
     try std.testing.expectEqualSlices(u8, &verify_payload, fake.payload_sent.items);
+    try std.testing.expectEqual(protocol_bytes.command.end_transaction, fake.sent.items[93]);
+    try std.testing.expectEqual(protocol_bytes.command.begin_transaction, fake.sent.items[101]);
+    try std.testing.expectEqual(protocol_bytes.command.read_code, fake.sent.items[173]);
 }
 
 test "writeROM reports verify mismatch for T48" {

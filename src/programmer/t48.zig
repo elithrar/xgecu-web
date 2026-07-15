@@ -242,8 +242,10 @@ pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
     try trans.send(&msg);
     var response = [_]u8{0} ** packet.erase_response_len;
     const received = try trans.recv(&response);
-    if (received != packet.t48_erase_ack_len and received < 13) return transport.Error.Io;
-    if (received >= 13 and response[12] != 0) return Error.Overcurrent;
+    // T48 returns an opaque short acknowledgement; status is checked after restart.
+    if (received == packet.t48_erase_ack_len) return;
+    if (received < 13) return transport.Error.Io;
+    if (response[12] != 0) return Error.Overcurrent;
     if (response[0] != 0) return Error.ProgrammerStatusError;
 }
 
@@ -408,6 +410,7 @@ test "T48 status and erase reject truncated responses" {
 
 test "erase accepts T48 short-packet acknowledgement" {
     var response = [_]u8{0} ** packet.t48_erase_ack_len;
+    response[0] = command.erase;
     var fake = transport.FakeTransport.init(std.testing.allocator, &response);
     defer fake.deinit();
 

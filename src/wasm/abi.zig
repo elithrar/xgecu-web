@@ -50,6 +50,12 @@ const State = enum {
     send_write_payload,
     send_write_status,
     recv_write_status,
+    send_end_before_verify,
+    send_verify_t56_bitstream_header,
+    send_verify_t56_bitstream_payload,
+    send_verify_begin,
+    send_verify_begin_status,
+    recv_verify_begin_status,
     send_protect_on,
     send_protect_on_status,
     recv_protect_on_status,
@@ -372,7 +378,7 @@ fn nextTransfer(op: *Operation) !Transfer {
             return outTransfer(op, endpoints.command, op.command[0..packet.system_info_request_len]);
         },
         .recv_info => return inTransfer(endpoints.command, packet.system_info_response_len),
-        .send_t56_bitstream_header, .send_second_t56_bitstream_header => {
+        .send_t56_bitstream_header, .send_second_t56_bitstream_header, .send_verify_t56_bitstream_header => {
             @memset(op.command[0..packet.bitstream_header_len], 0);
             op.command[0] = command.write_bitstream;
             const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
@@ -380,22 +386,22 @@ fn nextTransfer(op: *Operation) !Transfer {
             endian.storeInt(op.command[4..8], bitstream.len, .little);
             return outTransfer(op, endpoints.command, op.command[0..packet.bitstream_header_len]);
         },
-        .send_t56_bitstream_payload, .send_second_t56_bitstream_payload => {
+        .send_t56_bitstream_payload, .send_second_t56_bitstream_payload, .send_verify_t56_bitstream_payload => {
             const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
             if (bitstream.len == 0) return error.AlgorithmUnavailable;
             return outTransfer(op, endpoints.command, bitstream);
         },
-        .send_begin, .send_second_begin => {
+        .send_begin, .send_second_begin, .send_verify_begin => {
             writeBeginPacket(op);
             op.transaction_open = true;
             return outTransfer(op, endpoints.command, op.command[0..packet.begin_len]);
         },
-        .send_begin_status, .send_second_status, .send_protect_off_status, .send_write_status, .send_protect_on_status, .send_read_status, .verify_send_read_status => {
+        .send_begin_status, .send_second_status, .send_verify_begin_status, .send_protect_off_status, .send_write_status, .send_protect_on_status, .send_read_status, .verify_send_read_status => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.request_status;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .recv_begin_status, .recv_second_status, .recv_protect_off_status, .recv_write_status, .recv_protect_on_status, .recv_read_status, .verify_recv_read_status => return inTransfer(endpoints.command, packet.status_len),
+        .recv_begin_status, .recv_second_status, .recv_verify_begin_status, .recv_protect_off_status, .recv_write_status, .recv_protect_on_status, .recv_read_status, .verify_recv_read_status => return inTransfer(endpoints.command, packet.status_len),
         .send_chip_id => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.read_id;
@@ -415,7 +421,7 @@ fn nextTransfer(op: *Operation) !Transfer {
             op.command[0] = if (op.state == .send_protect_off) command.protect_off else command.protect_on;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .send_end_after_erase, .send_final_end, .send_abort_end => {
+        .send_end_after_erase, .send_end_before_verify, .send_final_end, .send_abort_end => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.end_transaction;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
@@ -543,12 +549,28 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 op.state = .send_write_cmd;
             } else if (op.verify) {
                 op.offset = 0;
-                op.state = .verify_send_read_cmd;
+                op.state = .send_end_before_verify;
             } else if (op.protect_after) {
                 op.state = .send_protect_on;
             } else {
                 op.state = .send_final_end;
             }
+        },
+        .send_end_before_verify => {
+            op.transaction_open = false;
+            op.state = if (op.programmer == .t56) .send_verify_t56_bitstream_header else .send_verify_begin;
+        },
+        .send_verify_t56_bitstream_header => op.state = .send_verify_t56_bitstream_payload,
+        .send_verify_t56_bitstream_payload => op.state = .send_verify_begin,
+        .send_verify_begin => {
+            op.transaction_open = true;
+            op.state = .send_verify_begin_status;
+        },
+        .send_verify_begin_status => op.state = .recv_verify_begin_status,
+        .recv_verify_begin_status => {
+            try checkStatus(op, data);
+            op.offset = 0;
+            op.state = .verify_send_read_cmd;
         },
         .send_protect_on => op.state = .send_protect_on_status,
         .send_protect_on_status => op.state = .recv_protect_on_status,
@@ -684,7 +706,7 @@ fn checkEraseResponse(op: *Operation, data: []const u8) !void {
             setShortRead(op, data.len, packet.t48_erase_ack_len);
             return error.ShortRead;
         }
-        if (data[0] != 0) return error.ProgrammerStatusError;
+        // T48's short erase acknowledgement is opaque; restart status is authoritative.
         return;
     }
     try checkStatus(op, data);
@@ -894,7 +916,7 @@ fn phaseCode(state: State) u32 {
         .send_erase, .recv_erase, .send_end_after_erase => 3,
         .send_protect_off, .send_protect_off_status, .recv_protect_off_status, .send_write_cmd, .send_write_payload, .send_write_status, .recv_write_status, .send_protect_on, .send_protect_on_status, .recv_protect_on_status => 4,
         .send_read_cmd, .recv_read_payload, .send_read_status, .recv_read_status => 5,
-        .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
+        .send_end_before_verify, .send_verify_t56_bitstream_header, .send_verify_t56_bitstream_payload, .send_verify_begin, .send_verify_begin_status, .recv_verify_begin_status, .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
         .send_final_end, .send_abort_end => 7,
         .done => 8,
         .failed => 9,
@@ -998,6 +1020,14 @@ test "T48 Wasm write operation sequences write status and verify transfers" {
     try expectNextTransfer(&op, .out, 2, 4); // T48 payload endpoint
     try completeTransfer(&op, &.{});
     try expectNextTransfer(&op, .out, 1, 8); // write status command
+    try completeTransfer(&op, &.{});
+    try completeTransfer(&op, &status);
+    try std.testing.expectEqual(@as(usize, 0), op.offset);
+    try expectNextTransfer(&op, .out, 1, 8); // end write transaction before verify
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 1, 64); // begin independent verify transaction
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, 1, 8); // verify begin status command
     try completeTransfer(&op, &.{});
     try completeTransfer(&op, &status);
     try expectNextTransfer(&op, .out, 1, 8); // verify read command
@@ -1116,6 +1146,7 @@ test "T48 Wasm accepts short-packet erase acknowledgement" {
         .data = &data,
     };
     var response = [_]u8{0} ** packet.t48_erase_ack_len;
+    response[0] = command.erase;
 
     try completeTransfer(&op, &response);
     try std.testing.expectEqual(State.send_end_after_erase, op.state);
