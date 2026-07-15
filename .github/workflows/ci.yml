@@ -44,6 +44,9 @@ jobs:
       - name: Package build
         run: pnpm build
 
+      - name: Package artifact drift check
+        run: git diff --exit-code -- dist
+
       - name: Demo typecheck
         run: pnpm run demo:typecheck
 

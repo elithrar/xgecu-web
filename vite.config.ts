@@ -18,6 +18,7 @@ export default defineConfig({
   plugins: [
     dts({
       entryRoot: "js/src",
+      include: ["js/src"],
       outDir: "dist"
     })
   ],
