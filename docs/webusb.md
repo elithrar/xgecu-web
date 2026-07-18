@@ -1,6 +1,6 @@
 # WebUSB behavior
 
-The JavaScript layer owns WebUSB permissions, opening, configuration selection, interface claiming, interface release, and async transfers. If a device is already open, the API still ensures configuration 1 is selected and interface 0 is claimed before ROM operations. The Wasm module never blocks on JavaScript promises; instead it exposes an operation state machine:
+The JavaScript layer owns WebUSB permissions, opening, configuration selection, interface claiming, interface release, and async transfers. If a device is already open, the API still ensures configuration 1 is selected and interface 0 is claimed before programmer operations. The Wasm module never blocks on JavaScript promises; instead it exposes an operation state machine:
 
 1. JS starts an operation such as `readROM`.
 2. JS asks Wasm for the next transfer.
@@ -8,8 +8,8 @@ The JavaScript layer owns WebUSB permissions, opening, configuration selection, 
 4. JS passes the transfer result back into Wasm.
 5. The loop repeats until Wasm reports completion.
 
-The high-level browser API serializes ROM operations per physical programmer. A second `readROM` or `writeROM` call on the same device, or an attempt to close its connection during an operation, throws `XgecuWebUSBError` with `code === "OperationInProgress"` until the first operation completes.
-An unexpected device close or physical disconnect invalidates the active connection for ROM operations. Reconnect explicitly before writing so applications can invalidate stale backups and confirmations.
+The high-level browser API serializes operations per physical programmer. A second `checkPinContacts`, `readROM`, or `writeROM` call on the same device, or an attempt to close its connection during an operation, throws `XgecuWebUSBError` with `code === "OperationInProgress"` until the first operation completes.
+An unexpected device close or physical disconnect invalidates the active connection for programmer operations. Reconnect explicitly before writing so applications can invalidate stale backups and confirmations.
 
 Endpoint mapping:
 
@@ -59,8 +59,8 @@ try {
 }
 ```
 
-Most browser apps should call `api.readROM()` and `api.writeROM()` instead of using this lower-level loop directly.
+Most browser apps should call `api.checkPinContacts()`, `api.readROM()`, and `api.writeROM()` instead of using this lower-level loop directly.
 
 `performWebUSBTransfer()` validates WebUSB transfer statuses and exact OUT byte counts. Successful short IN packets are passed to Wasm because WebUSB's requested IN length is a maximum; the protocol state machine validates the minimum bytes required for each response. Programmer names, manufacturer names, and serial numbers are trimmed at the first NUL from USB string descriptors. `WebUSBProgrammerConnection.close()` releases interface 0 and closes devices opened by this API after all shared connection references are closed.
-High-level browser APIs serialize ROM operations per physical programmer and throw package-owned `XgecuWebUSBError` objects for expected failures.
-Wasm operations send a final `end_transaction` transfer on normal completion and attempt an `end_transaction` during abort or transfer failure cleanup. A failed cleanup quarantines the high-level connection and requires an explicit reconnect. Each low-level Wasm operation handle can be run once; dispose an unstarted handle with `disposeOperation()`.
+High-level browser APIs serialize programmer operations per physical programmer and throw package-owned `XgecuWebUSBError` objects for expected failures.
+ROM operations send a final `end_transaction` transfer on normal completion and attempt an `end_transaction` during abort or transfer failure cleanup. T48 pin checks reset all pin drivers instead. A failed cleanup quarantines the high-level connection and requires an explicit reconnect. Each low-level Wasm operation handle can be run once; dispose an unstarted handle with `disposeOperation()`.

@@ -19,6 +19,7 @@ Open the Vite URL in a Chromium-based browser on `localhost`. WebUSB requires a 
 The demo is intentionally conservative:
 
 - It requires a successful `readROM` before write is enabled.
+- It exposes an explicit pin-contact check for catalogued T48 targets and reports device package pins that need inspection.
 - It provides a readback download link so the first backup can be saved before modification.
 - It disables write when the selected image length does not match the readback length.
 - It uses the target's `canErase` metadata, requires a blank readback for externally erased targets, and keeps `verify: true` explicit.

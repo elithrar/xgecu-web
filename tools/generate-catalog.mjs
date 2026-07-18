@@ -55,6 +55,10 @@ function generate(catalog) {
     names.add(name);
     writeStringArray(out, `${name}_aliases`, device.aliases);
     writeProgrammerArray(out, `${name}_programmers`, device.programmers);
+    if (device.pinCheck) {
+      writeByteArray(out, `${name}_pin_check_gnd_pins`, Buffer.from(device.pinCheck.gndPins));
+      writeByteArray(out, `${name}_pin_check_mask`, Buffer.from(device.pinCheck.mask));
+    }
     if (device.t56AlgorithmHex || device.t56AlgorithmBase64) {
       writeByteArray(out, `${name}_t56_algorithm`, decodeAlgorithm(device));
     }
@@ -74,6 +78,9 @@ function generate(catalog) {
     field(out, "voltages_raw", zigNumber(device.voltagesRaw));
     field(out, "chip_info", zigNumber(device.chipInfo));
     field(out, "pin_map", zigNumber(device.pinMap));
+    if (device.pinCheck) {
+      field(out, "pin_check", `.{ .gnd_pins = &${name}_pin_check_gnd_pins, .mask = &${name}_pin_check_mask }`);
+    }
     field(out, "data_memory_size", zigNumber(device.dataMemorySize));
     field(out, "data_memory2_size", zigNumber(device.dataMemory2Size));
     field(out, "page_size", zigNumber(device.pageSize));
@@ -131,6 +138,7 @@ function validateDevice(device, index) {
   if (device.programmers.includes("t56") && !device.t56AlgorithmHex && !device.t56AlgorithmBase64) {
     throw new Error(`${label}.programmers includes t56 but no T56 algorithm payload is present`);
   }
+  if (device.pinCheck) validatePinCheck(device.pinCheck, device, label);
   if (device.t56AlgorithmHex && device.t56AlgorithmBase64) {
     throw new Error(`${label} must use only one T56 algorithm encoding`);
   }
@@ -153,6 +161,26 @@ function validateDevice(device, index) {
   if (device.canErase !== ((flags & 0x10) !== 0)) {
     throw new Error(`${label}.canErase must match flagsRaw erase support`);
   }
+}
+
+function validatePinCheck(pinCheck, device, label) {
+  if (typeof pinCheck !== "object" || pinCheck === null) throw new Error(`${label}.pinCheck must be an object`);
+  if (!device.programmers.includes("t48")) throw new Error(`${label}.pinCheck requires T48 support`);
+  const packagePins = (parseNumber(device.packageDetailsRaw, `${label}.packageDetailsRaw`) >>> 24) & 0x3f;
+  if (packagePins === 0 || packagePins > 40 || packagePins % 2 !== 0) {
+    throw new Error(`${label}.pinCheck requires an even package pin count from 2 to 40`);
+  }
+  const half = packagePins / 2;
+  for (const key of ["gndPins", "mask"]) {
+    requiredArray(pinCheck, key, `${label}.pinCheck`);
+    if (new Set(pinCheck[key]).size !== pinCheck[key].length) throw new Error(`${label}.pinCheck.${key} contains duplicates`);
+    for (const [index, pin] of pinCheck[key].entries()) {
+      numberInRange(pin, `${label}.pinCheck.${key}[${index}]`, 40, 1);
+      if (pin > half && pin <= 40 - half) throw new Error(`${label}.pinCheck.${key}[${index}] is outside the package ZIF positions`);
+    }
+  }
+  const grounds = new Set(pinCheck.gndPins);
+  if (pinCheck.mask.some((pin) => grounds.has(pin))) throw new Error(`${label}.pinCheck.mask must not include a ground driver pin`);
 }
 
 function validateProvenance(provenance) {

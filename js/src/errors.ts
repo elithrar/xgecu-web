@@ -19,7 +19,9 @@ export type XgecuErrorCode =
   | "OperationInProgress"
   | "InvalidInput"
   | "ShortRead"
-  | "TargetNotBlank";
+  | "TargetNotBlank"
+  | "PinCheckUnavailable"
+  | "ProtectionUnsupported";
 
 export class XgecuWebUSBError extends Error {
   constructor(message: string, readonly code: XgecuErrorCode = "Unknown", readonly cause?: unknown) {
@@ -82,6 +84,10 @@ export function xgecuErrorCodeFromAbi(code: number): XgecuErrorCode {
       return "ShortRead";
     case 25:
       return "TargetNotBlank";
+    case 26:
+      return "PinCheckUnavailable";
+    case 27:
+      return "ProtectionUnsupported";
     default:
       return "Unknown";
   }

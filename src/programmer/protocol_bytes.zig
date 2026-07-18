@@ -34,6 +34,10 @@ pub const command = struct {
     pub const write_jedec: u8 = 0x1e;
     pub const write_bitstream: u8 = 0x26;
     pub const logic_ic_test_vector: u8 = 0x28;
+    pub const reset_pin_drivers: u8 = 0x2d;
+    pub const set_pulldowns: u8 = 0x32;
+    pub const read_pins: u8 = 0x35;
+    pub const set_pin_output: u8 = 0x36;
     pub const autodetect: u8 = 0x37;
     pub const request_status: u8 = 0x39;
 };
@@ -56,6 +60,10 @@ pub const packet = struct {
     pub const jedec_write_len: usize = 64;
     pub const fuse_len: usize = 64;
     pub const logic_vector_len: usize = 32;
+    pub const pin_driver_len: usize = 48;
+    pub const pin_read_response_len: usize = 48;
+    pub const pin_read_min_len: usize = 13;
+    pub const main_zif_pin_count: u8 = 40;
 
     /// T56 firmware returns the requested read payload plus a small status
     /// trailer. The native protocol caps payloads to keep that frame bounded.

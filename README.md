@@ -79,6 +79,12 @@ console.log(devices);
 let programmer: ProgrammerConnection | undefined;
 try {
   programmer = await api.requestProgrammer();
+  const contacts = await api.checkPinContacts({
+    programmer,
+    device: "AT28C64B@DIP28"
+  });
+  if (!contacts.passed) throw new Error(`Check contact on pins: ${contacts.badPins.join(", ")}`);
+
   const bytes = await api.readROM({
     programmer,
     device: "AT28C64B@DIP28",
@@ -99,9 +105,10 @@ try {
 }
 ```
 
-See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, read a ROM, download the readback, and write a selected binary image with target-appropriate erase behavior plus verification after a backup and image-length check.
+See `examples/react-rom-demo` for a small React-only Vite app that can connect to a programmer, check supported T48 pin contacts, read a ROM, download the readback, and write a selected binary image with target-appropriate erase behavior plus verification after a backup and image-length check.
 
 For a complete browser example that backs up and writes a 28-pin EEPROM, see `docs/examples.md`.
+See `docs/t48-review.md` for the implementation comparison, addressed findings, and remaining limits.
 
 ## Zig API
 
@@ -148,6 +155,7 @@ The current JSON source is intentionally small seed data and should be expanded 
 ## Hardware safety
 
 - `writeROM` is always hardware-affecting and potentially destructive; `erase: true` additionally erases targets whose catalog metadata has `canErase: true`. UV EPROMs require external erasure and explicit `erase: false`; the write operation performs a full blank check before programming.
+- Run the explicit `checkPinContacts` operation when `supportsPinCheck` is true. A passing check improves contact confidence but does not identify the chip or replace package, orientation, and adapter inspection.
 - Erase writes are restricted to code memory and require a full image exactly matching that region.
 - Keep `verify: true` unless you have an external verification process.
 - Read and save a backup before writing.

@@ -20,6 +20,8 @@ export interface DeviceSummary {
   supportsUnprotect: boolean;
   /** Whether catalog metadata supports enabling write protection after programming. */
   supportsProtect: boolean;
+  /** Whether catalog metadata supports a T48 pin-contact check. */
+  supportsPinCheck: boolean;
   supportsT48: boolean;
   supportsT56: boolean;
 }
@@ -75,6 +77,21 @@ export interface WriteROMOptions {
   onProgress?: RomProgressHandler;
 }
 
+export interface PinCheckOptions {
+  programmer: ProgrammerConnection;
+  device: string;
+  programmerKind?: "auto" | "t48";
+  signal?: AbortSignal;
+}
+
+export interface PinCheckResult {
+  passed: boolean;
+  /** Device package pin numbers exercised by the check. */
+  checkedPins: number[];
+  /** Checked device pins that did not reach the expected logic level. */
+  badPins: number[];
+}
+
 export type RomOperationPhase = "connecting" | "identifying" | "erasing" | "writing" | "reading" | "verifying" | "cleanup" | "done" | "failed";
 
 export interface RomProgressEvent {
@@ -91,6 +108,7 @@ export interface XgecuWebUSB {
   getProgrammers(): Promise<ProgrammerInfo[]>;
   requestProgrammer(): Promise<ProgrammerConnection>;
   connectProgrammer(device: USBDeviceLike): Promise<ProgrammerConnection>;
+  checkPinContacts(options: PinCheckOptions): Promise<PinCheckResult>;
   readROM(options: ReadROMOptions): Promise<Uint8Array>;
   writeROM(options: WriteROMOptions): Promise<void>;
 }

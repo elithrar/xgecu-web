@@ -73,6 +73,11 @@ pub const ChipId = struct {
     value: u32,
 };
 
+pub const PinRead = struct {
+    high: u64,
+    overcurrent: u8,
+};
+
 pub const FuseKind = enum {
     user,
     config,
@@ -153,7 +158,7 @@ pub fn readBlock(trans: transport.Transport, kind: model.MemoryKind, address: u3
 }
 
 pub fn writeBlock(allocator: std.mem.Allocator, trans: transport.Transport, device: Device, kind: model.MemoryKind, address: u32, data: []const u8) Error!void {
-    if (data.len > std.math.maxInt(u16) or !validAddressRange(address, data.len)) return transport.Error.Io;
+    if (data.len == 0 or data.len > device.write_buffer_size or !validAddressRange(address, data.len)) return transport.Error.Io;
 
     var msg = [_]u8{0} ** packet.short_command_len;
     msg[0] = writeCommand(kind);
@@ -166,6 +171,81 @@ pub fn writeBlock(allocator: std.mem.Allocator, trans: transport.Transport, devi
     @memcpy(payload[0..data.len], data);
     try trans.send(&msg);
     try trans.writePayload(payload, 0);
+}
+
+pub fn checkPinContacts(trans: transport.Transport, gnd_pins: []const u8) Error!PinRead {
+    if (gnd_pins.len == 0) return transport.Error.Io;
+
+    try resetPinDrivers(trans);
+    var reset_needed = true;
+    defer if (reset_needed) resetPinDrivers(trans) catch {};
+
+    try setInputPulldowns(trans);
+    for (gnd_pins) |pin| try setPinOutput(trans, pin, true);
+    const result = try readPins(trans);
+    if (result.overcurrent != 0) return Error.Overcurrent;
+
+    try resetPinDrivers(trans);
+    reset_needed = false;
+    return result;
+}
+
+pub fn writeResetPinDriversPacket(out: *[packet.pin_driver_len]u8) void {
+    @memset(out, 0);
+    out[0] = command.reset_pin_drivers;
+}
+
+pub fn writeSetInputPulldownsPacket(out: *[packet.pin_driver_len]u8) void {
+    @memset(out, 0);
+    out[0] = command.set_pulldowns;
+}
+
+pub fn writeSetPinOutputPacket(out: *[packet.short_command_len]u8, pin: u8, high: bool) Error!void {
+    if (pin == 0 or pin > packet.main_zif_pin_count) return transport.Error.Io;
+    @memset(out, 0);
+    out[0] = command.set_pin_output;
+    out[1] = @intFromBool(high);
+    out[4] = pin - 1;
+}
+
+pub fn writeReadPinsPacket(out: *[packet.short_command_len]u8) void {
+    @memset(out, 0);
+    out[0] = command.read_pins;
+}
+
+pub fn parsePinRead(data: []const u8) Error!PinRead {
+    if (data.len < packet.pin_read_min_len) return transport.Error.Io;
+    return .{
+        .high = endian.loadInt(data[8..packet.pin_read_min_len], .little),
+        .overcurrent = data[1],
+    };
+}
+
+fn resetPinDrivers(trans: transport.Transport) Error!void {
+    var msg: [packet.pin_driver_len]u8 = undefined;
+    writeResetPinDriversPacket(&msg);
+    try trans.send(&msg);
+}
+
+fn setInputPulldowns(trans: transport.Transport) Error!void {
+    var msg: [packet.pin_driver_len]u8 = undefined;
+    writeSetInputPulldownsPacket(&msg);
+    try trans.send(&msg);
+}
+
+fn setPinOutput(trans: transport.Transport, pin: u8, high: bool) Error!void {
+    var msg: [packet.short_command_len]u8 = undefined;
+    try writeSetPinOutputPacket(&msg, pin, high);
+    try trans.send(&msg);
+}
+
+fn readPins(trans: transport.Transport) Error!PinRead {
+    var request: [packet.short_command_len]u8 = undefined;
+    writeReadPinsPacket(&request);
+    try trans.send(&request);
+    var response = [_]u8{0} ** packet.pin_read_response_len;
+    const received = try trans.recv(&response);
+    return parsePinRead(response[0..received]);
 }
 
 pub fn readFuses(trans: transport.Transport, device: Device, kind: FuseKind, items_count: u8, out: []u8) Error!void {
@@ -472,6 +552,39 @@ test "T48 write allocates its padded payload before sending the command" {
 
     try std.testing.expectError(error.OutOfMemory, writeBlock(fixed.allocator(), fake.transport(), device, .code, 0, &.{0xaa}));
     try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
+}
+
+test "T48 write rejects blocks larger than the catalog write buffer" {
+    var fake = transport.FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+    var device = testDevice();
+    device.write_buffer_size = 2;
+
+    try std.testing.expectError(transport.Error.Io, writeBlock(std.testing.allocator, fake.transport(), device, .code, 0, &.{ 1, 2, 3 }));
+    try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
+}
+
+test "T48 pin contact check uses pulldowns and always resets drivers" {
+    var response = [_]u8{0} ** packet.pin_read_response_len;
+    response[8] = 0x02;
+    response[12] = 0x80;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    const result = try checkPinContacts(fake.transport(), &.{14});
+    try std.testing.expect(result.high & (@as(u64, 1) << 1) != 0);
+    try std.testing.expect(result.high & (@as(u64, 1) << 39) != 0);
+    try std.testing.expectEqual(@as(u8, command.reset_pin_drivers), fake.sent.items[0]);
+    try std.testing.expectEqual(@as(u8, command.set_pulldowns), fake.sent.items[packet.pin_driver_len]);
+    try std.testing.expectEqual(@as(u8, command.set_pin_output), fake.sent.items[packet.pin_driver_len * 2]);
+    try std.testing.expectEqual(@as(u8, 13), fake.sent.items[packet.pin_driver_len * 2 + 4]);
+    try std.testing.expectEqual(@as(u8, command.read_pins), fake.sent.items[packet.pin_driver_len * 2 + packet.short_command_len]);
+    try std.testing.expectEqual(@as(u8, command.reset_pin_drivers), fake.sent.items[fake.sent.items.len - packet.pin_driver_len]);
+
+    response[1] = 1;
+    fake.response = &response;
+    try std.testing.expectError(Error.Overcurrent, checkPinContacts(fake.transport(), &.{14}));
+    try std.testing.expectEqual(@as(u8, command.reset_pin_drivers), fake.sent.items[fake.sent.items.len - packet.pin_driver_len]);
 }
 
 test "get chip ID decodes big and little endian ID formats" {

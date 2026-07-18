@@ -9,6 +9,7 @@ export interface WasmExports {
     mp_last_error_len(): number;
     mp_device_list(queryPtr: number, queryLen: number, programmer: number, limit: number): number;
     mp_device_detail(devicePtr: number, deviceLen: number, programmer: number): number;
+    mp_start_pin_check(programmer: number, devicePtr: number, deviceLen: number): number;
     mp_start_read_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, skipIdCheck: number, continueOnIdMismatch: number): number;
     mp_start_write_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, dataPtr: number, dataLen: number, erase: number, eraseNumFuses: number, erasePld: number, verify: number, skipIdCheck: number, continueOnIdMismatch: number, unprotectBefore: number, protectAfter: number): number;
     mp_operation_next(handle: number): number;
@@ -60,6 +61,10 @@ export declare class WasmBridge {
         memory: MemoryKind;
         skipIdCheck: boolean;
         continueOnIdMismatch: boolean;
+    }): WasmOperationHandle;
+    startPinCheck(options: {
+        programmer: "auto" | "t48";
+        device: string;
     }): WasmOperationHandle;
     startWriteROM(options: {
         programmer: ProgrammerKind;

@@ -51,6 +51,7 @@ pub fn list(allocator: std.mem.Allocator, query: ?[]const u8, programmer: model.
             .can_erase = device.can_erase,
             .supports_unprotect = flags.off_protect_before,
             .supports_protect = flags.protect_after,
+            .supports_pin_check = device.pin_check != null and device.supports(.t48),
             .supports_t48 = device.supports(.t48),
             .supports_t56 = device.supports(.t56),
         });
@@ -86,6 +87,8 @@ test "find resolves sourced T48 descriptors and programmer support" {
     try std.testing.expectEqual(@as(u32, 0x13), device.pin_map);
     try std.testing.expectEqual(@as(u32, 0xc010), device.flags_raw);
     try std.testing.expect(device.can_erase);
+    try std.testing.expectEqualSlices(u8, &.{14}, device.pin_check.?.gnd_pins);
+    try std.testing.expectEqual(@as(usize, 25), device.pin_check.?.mask.len);
     try std.testing.expect(!device.supports(.t56));
     try std.testing.expectError(Error.DeviceNotFound, find("missing", .t48));
     try std.testing.expectError(Error.DeviceNotFound, find("at28c64b", .t56));
@@ -101,6 +104,7 @@ test "list exposes UV EPROM erase and ID metadata" {
     try std.testing.expect(!found[0].can_erase);
     try std.testing.expect(!found[0].supports_unprotect);
     try std.testing.expect(!found[0].supports_protect);
+    try std.testing.expect(found[0].supports_pin_check);
     try std.testing.expect(found[0].supports_t48);
     try std.testing.expect(!found[0].supports_t56);
     try std.testing.expectError(Error.DeviceNotFound, find("27C64", .t48));

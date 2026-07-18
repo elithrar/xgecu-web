@@ -5,6 +5,8 @@ import type {
   DeviceDetail,
   DeviceListQuery,
   DeviceSummary,
+  PinCheckOptions,
+  PinCheckResult,
   ProgrammerConnection,
   ProgrammerInfo,
   ReadROMOptions,
@@ -72,7 +74,7 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
   async close(): Promise<void> {
     if (this.closed) return;
     if (this.state.operations !== 0) {
-      throw new XgecuWebUSBError("A ROM operation is still in progress for this programmer.", "OperationInProgress");
+      throw new XgecuWebUSBError("A programmer operation is still in progress for this programmer.", "OperationInProgress");
     }
     if (this.state.lifecycleActive) {
       throw new XgecuWebUSBError("A USB lifecycle operation is already in progress for this programmer.", "OperationInProgress");
@@ -181,6 +183,29 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
     });
   }
 
+  async checkPinContacts(options: PinCheckOptions): Promise<PinCheckResult> {
+    validateConnection(options.programmer);
+    validateDeviceName(options.device);
+    validateEnum(options.programmerKind, ["auto", "t48"], "programmerKind");
+    throwIfAborted(options.signal);
+    const programmerKind = options.programmerKind ?? "auto";
+    const usbDevice = options.programmer.device;
+    return withProgrammerOperation(usbDevice, async () => {
+      const device = this.wasm.resolveDevice(options.device, programmerKind);
+      if (!device) throw new XgecuWebUSBError("Device not found or unsupported by requested programmer.", "DeviceNotFound");
+      if (!device.supportsPinCheck) {
+        throw new XgecuWebUSBError("Pin-contact checking is unavailable for this device and programmer.", "PinCheckUnavailable");
+      }
+      await ensureReady(usbDevice);
+      const handle = this.wasm.startPinCheck({ programmer: programmerKind, device: options.device });
+      const bytes = await this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(usbDevice, transfer), {
+        signal: options.signal,
+        onCleanupFailure: () => markProgrammerPoisoned(usbDevice)
+      });
+      return parsePinCheckResult(bytes);
+    });
+  }
+
   async writeROM(options: WriteROMOptions): Promise<void> {
     validateConnection(options.programmer);
     validateWriteOptions(options);
@@ -221,6 +246,12 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
           "The selected device cannot be electrically erased. Externally erase and blank-check it, then write with erase: false.",
           "InvalidInput"
         );
+      }
+      if (operation.unprotectBefore && !device.supportsUnprotect) {
+        throw new XgecuWebUSBError("The selected device does not support disabling protection before programming.", "ProtectionUnsupported");
+      }
+      if (operation.protectAfter && !device.supportsProtect) {
+        throw new XgecuWebUSBError("The selected device does not support enabling protection after programming.", "ProtectionUnsupported");
       }
       await ensureReady(usbDevice);
       const handle = this.wasm.startWriteROM({
@@ -295,10 +326,10 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
     throw new XgecuWebUSBError("A USB lifecycle operation is already in progress for this programmer.", "OperationInProgress");
   }
   if (forOperation && !device.opened && state.sessionEstablished) {
-    throw new XgecuWebUSBError("The programmer connection was lost. Reconnect before starting another ROM operation.", "WebUSBLifecycleFailed");
+    throw new XgecuWebUSBError("The programmer connection was lost. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
   }
   if (forOperation && state.poisoned) {
-    throw new XgecuWebUSBError("The programmer is in an unknown transaction state. Reconnect before starting another ROM operation.", "WebUSBLifecycleFailed");
+    throw new XgecuWebUSBError("The programmer is in an unknown hardware state. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
   }
   state.lifecycleActive = true;
   let openedHere = false;
@@ -414,6 +445,27 @@ function cleanUsbString(value: string | undefined): string | undefined {
   return value.split("\0", 1)[0].trim() || undefined;
 }
 
+function parsePinCheckResult(bytes: Uint8Array): PinCheckResult {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (error) {
+    throw new XgecuWebUSBError("The pin-contact check returned an invalid result.", "Unknown", error);
+  }
+  if (typeof value !== "object" || value === null) {
+    throw new XgecuWebUSBError("The pin-contact check returned an invalid result.");
+  }
+  const result = value as Partial<PinCheckResult>;
+  if (typeof result.passed !== "boolean" || !validDevicePins(result.checkedPins) || !validDevicePins(result.badPins)) {
+    throw new XgecuWebUSBError("The pin-contact check returned an invalid result.");
+  }
+  return { passed: result.passed, checkedPins: result.checkedPins, badPins: result.badPins };
+}
+
+function validDevicePins(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every((pin) => Number.isInteger(pin) && pin >= 1 && pin <= 40);
+}
+
 function memorySize(device: DeviceDetail, memory: NonNullable<WriteROMOptions["memory"]>): number {
   switch (memory) {
     case "code":
@@ -428,7 +480,7 @@ function memorySize(device: DeviceDetail, memory: NonNullable<WriteROMOptions["m
 async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Promise<T>): Promise<T> {
   const state = stateFor(device);
   if (state.operations !== 0) {
-    throw new XgecuWebUSBError("A ROM operation is already in progress for this programmer.", "OperationInProgress");
+    throw new XgecuWebUSBError("A programmer operation is already in progress for this programmer.", "OperationInProgress");
   }
   state.operations += 1;
   try {
@@ -463,6 +515,10 @@ function validateConnection(programmer: ProgrammerConnection): void {
   if (programmer.isClosed) {
     throw new XgecuWebUSBError("The programmer connection is closed.", "WebUSBLifecycleFailed");
   }
+}
+
+function validateDeviceName(device: unknown): asserts device is string {
+  if (typeof device !== "string" || device.trim() === "") invalidInput("device must be a non-empty string");
 }
 
 function validateReadOptions(options: ReadROMOptions): void {

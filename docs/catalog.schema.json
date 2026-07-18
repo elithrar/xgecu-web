@@ -66,6 +66,7 @@
           "voltagesRaw": { "$ref": "#/$defs/uint" },
           "chipInfo": { "$ref": "#/$defs/uint" },
           "pinMap": { "$ref": "#/$defs/uint" },
+          "pinCheck": { "$ref": "#/$defs/pinCheck" },
           "dataMemorySize": { "$ref": "#/$defs/uint" },
           "dataMemory2Size": { "$ref": "#/$defs/uint" },
           "pageSize": { "$ref": "#/$defs/uint" },
@@ -88,6 +89,25 @@
     }
   },
   "$defs": {
+    "pinCheck": {
+      "type": "object",
+      "required": ["gndPins", "mask"],
+      "additionalProperties": false,
+      "properties": {
+        "gndPins": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 40 }
+        },
+        "mask": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 40 }
+        }
+      }
+    },
     "uint": {
       "oneOf": [
         { "type": "integer", "minimum": 0 },

@@ -17,6 +17,22 @@ pub const Error = catalog.Error || protocol.Error || error{
     InputEmpty,
     EraseUnsupported,
     TargetNotBlank,
+    PinCheckUnavailable,
+    ProtectionUnsupported,
+};
+
+pub const PinCheckResult = struct {
+    checked_pins: []u8,
+    bad_pins: []u8,
+
+    pub fn deinit(self: PinCheckResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.checked_pins);
+        allocator.free(self.bad_pins);
+    }
+
+    pub fn passed(self: PinCheckResult) bool {
+        return self.bad_pins.len == 0;
+    }
 };
 
 pub const ReadOptions = struct {
@@ -41,6 +57,38 @@ pub const WriteOptions = struct {
 
 pub fn deviceList(allocator: std.mem.Allocator, query: ?[]const u8, programmer: model.Programmer, limit: usize) ![]catalog.DeviceSummary {
     return catalog.list(allocator, query, programmer, limit);
+}
+
+pub fn checkPinContacts(
+    allocator: std.mem.Allocator,
+    trans: transport_mod.Transport,
+    device_name: []const u8,
+    requested_programmer: model.Programmer,
+) Error!PinCheckResult {
+    const info = try openSupportedSession(trans, requested_programmer);
+    if (info.programmer != .t48) return Error.PinCheckUnavailable;
+    const device = try catalog.find(device_name, info.programmer);
+    const map = device.pin_check orelse return Error.PinCheckUnavailable;
+    const package = model.decodePackageDetails(device.package_details_raw);
+    if (package.pin_count == 0 or package.pin_count > protocol_bytes.packet.main_zif_pin_count or package.pin_count % 2 != 0) return Error.PinCheckUnavailable;
+    for (map.gnd_pins) |zif_pin| _ = try devicePinNumber(zif_pin, package.pin_count);
+    for (map.mask) |zif_pin| _ = try devicePinNumber(zif_pin, package.pin_count);
+
+    const read = try t48.checkPinContacts(trans, map.gnd_pins);
+    const checked_pins = try allocator.alloc(u8, map.mask.len);
+    errdefer allocator.free(checked_pins);
+    var bad: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer bad.deinit(allocator);
+
+    for (map.mask, 0..) |zif_pin, index| {
+        const device_pin = try devicePinNumber(zif_pin, package.pin_count);
+        checked_pins[index] = device_pin;
+        if (read.high & (@as(u64, 1) << @intCast(zif_pin - 1)) == 0) try bad.append(allocator, device_pin);
+    }
+    return .{
+        .checked_pins = checked_pins,
+        .bad_pins = try bad.toOwnedSlice(allocator),
+    };
 }
 
 pub fn readROM(
@@ -109,6 +157,9 @@ pub fn writeROM(
     if (options.erase and options.memory != .code) return Error.InputTooLarge;
     if (options.erase and data.len != size) return Error.InputTooLarge;
     if (options.erase and !device.can_erase) return Error.EraseUnsupported;
+    const flags = model.decodeFlags(device.flags_raw, device.voltages_raw, device.chip_info, device.protocol_id);
+    if (options.unprotect_before and !flags.off_protect_before) return Error.ProtectionUnsupported;
+    if (options.protect_after and !flags.protect_after) return Error.ProtectionUnsupported;
 
     const descriptor = device.descriptor(info.programmer);
     var protocol_open = false;
@@ -253,6 +304,20 @@ fn memorySize(device: catalog.DeviceRecord, memory: model.MemoryKind) usize {
     };
 }
 
+fn devicePinNumber(zif_pin: u8, package_pins: u8) Error!u8 {
+    if (zif_pin == 0 or zif_pin > protocol_bytes.packet.main_zif_pin_count) return Error.PinCheckUnavailable;
+    const half = package_pins / 2;
+    const gap = protocol_bytes.packet.main_zif_pin_count - package_pins;
+    const device_pin = if (zif_pin <= half)
+        zif_pin
+    else if (zif_pin > protocol_bytes.packet.main_zif_pin_count - half)
+        zif_pin - gap
+    else
+        return Error.PinCheckUnavailable;
+    if (device_pin == 0 or device_pin > package_pins) return Error.PinCheckUnavailable;
+    return device_pin;
+}
+
 fn readChunkSize(programmer: model.Programmer, descriptor: t48.Device) usize {
     const descriptor_chunk = @max(@as(usize, descriptor.read_buffer_size), 1);
     return if (programmer == .t56)
@@ -295,6 +360,43 @@ test "deviceList exposes catalog summaries" {
     try std.testing.expectEqual(@as(u32, 8192), found[0].code_memory_size);
     try std.testing.expect(found[0].supports_unprotect);
     try std.testing.expect(found[0].supports_protect);
+    try std.testing.expect(found[0].supports_pin_check);
+}
+
+test "checkPinContacts reports T48 device pin numbers" {
+    try std.testing.expectError(Error.PinCheckUnavailable, devicePinNumber(15, 28));
+
+    var response = [_]u8{0xff} ** protocol_bytes.packet.system_info_response_len;
+    response[4] = 1;
+    response[5] = 2;
+    response[6] = 7;
+    response[1] = 0;
+    response[8] &= ~@as(u8, 0x02);
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+
+    const result = try checkPinContacts(std.testing.allocator, fake.transport(), "AT28C64B", .t48);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.passed());
+    try std.testing.expectEqualSlices(u8, &.{2}, result.bad_pins);
+    try std.testing.expectEqual(@as(u8, 2), result.checked_pins[0]);
+    try std.testing.expectEqual(@as(u8, 28), result.checked_pins[result.checked_pins.len - 1]);
+}
+
+test "writeROM rejects unsupported protection commands before a transaction" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[6] = 7;
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+    const data = [_]u8{0xff} ** 8192;
+
+    try std.testing.expectError(Error.ProtectionUnsupported, writeROM(std.testing.allocator, fake.transport(), "M27C64A", &data, .{
+        .programmer = .t48,
+        .erase = false,
+        .unprotect_before = true,
+    }));
+    try std.testing.expectEqual(@as(usize, protocol_bytes.packet.system_info_request_len), fake.sent.items.len);
 }
 
 test "readROM uses session, begin transaction, and chunked reads" {

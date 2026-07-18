@@ -23,11 +23,19 @@ const TransferKind = enum(u32) {
 const OpKind = enum {
     read,
     write,
+    pin_check,
 };
 
 const State = enum {
     send_info,
     recv_info,
+    send_pin_reset,
+    send_pin_pulldowns,
+    send_pin_ground,
+    send_pin_read,
+    recv_pin_read,
+    send_pin_cleanup,
+    send_abort_pin_reset,
     send_t56_bitstream_header,
     send_t56_bitstream_payload,
     send_begin,
@@ -125,6 +133,9 @@ const Operation = struct {
     unprotect_before: bool = false,
     protect_after: bool = false,
     transaction_open: bool = false,
+    pin_ground_index: usize = 0,
+    pin_read: t48.PinRead = .{ .high = 0, .overcurrent = 0 },
+    pin_drivers_active: bool = false,
 
     fn deinit(self: *Operation, alloc: std.mem.Allocator) void {
         if (self.data.len != 0) alloc.free(self.data);
@@ -212,6 +223,7 @@ export fn mp_device_detail(name_ptr: u32, name_len: u32, programmer_value: u32) 
         .can_erase = device.can_erase,
         .supports_unprotect = flags.off_protect_before,
         .supports_protect = flags.protect_after,
+        .supports_pin_check = device.pin_check != null and device.supports(.t48),
         .supports_t48 = device.supports(.t48),
         .supports_t56 = device.supports(.t56),
     };
@@ -240,6 +252,23 @@ export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: 
     return @intCast(@intFromPtr(op));
 }
 
+export fn mp_start_pin_check(programmer_value: u32, device_ptr: u32, device_len: u32) u32 {
+    const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
+    if (programmer == .t56) return failStart("PinCheckUnavailable");
+    const device_name = sliceConst(device_ptr, device_len);
+    const device = catalog.find(device_name, programmer) catch return failStart("device not found or unsupported by requested programmer");
+    if (!validPinCheck(device)) return failStart("PinCheckUnavailable");
+    const op = allocator().create(Operation) catch return failStart("out of memory");
+    op.* = .{
+        .kind = .pin_check,
+        .requested_programmer = programmer,
+        .device = device,
+        .descriptor = device.descriptor(.t48),
+        .memory = .code,
+    };
+    return @intCast(@intFromPtr(op));
+}
+
 export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, erase_num_fuses: u32, erase_pld: u32, verify: u32, skip_id_check: u32, continue_on_id_mismatch: u32, unprotect_before: u32, protect_after: u32) u32 {
     if (data_len == 0) return failStart("input data is empty");
     if (data_ptr == 0) return failStart("invalid data pointer");
@@ -255,6 +284,9 @@ export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len:
     if (erase != 0 and memory != .code) return failStart("InputTooLarge");
     if (erase != 0 and data_len != size) return failStart("InputTooLarge");
     if (erase != 0 and !device.can_erase) return failStart("EraseUnsupported");
+    const flags = model.decodeFlags(device.flags_raw, device.voltages_raw, device.chip_info, device.protocol_id);
+    if (unprotect_before != 0 and !flags.off_protect_before) return failStart("ProtectionUnsupported");
+    if (protect_after != 0 and !flags.protect_after) return failStart("ProtectionUnsupported");
     const data = allocator().dupe(u8, sliceConst(data_ptr, data_len)) catch return failStart("out of memory");
     const op = allocator().create(Operation) catch {
         allocator().free(data);
@@ -289,8 +321,8 @@ export fn mp_operation_next(handle: u32) u32 {
     if (op.awaiting) return @intFromEnum(op.transfer.kind);
     op.transfer = nextTransfer(op) catch |err| {
         setOperationError(op, err);
-        op.state = if (op.transaction_open) .send_abort_end else .failed;
-        if (op.state == .send_abort_end) {
+        op.state = cleanupState(op);
+        if (op.state == .send_abort_end or op.state == .send_abort_pin_reset) {
             op.transfer = nextTransfer(op) catch {
                 op.state = .failed;
                 return @intFromEnum(TransferKind.failed);
@@ -322,12 +354,12 @@ export fn mp_operation_complete(handle: u32, status: u32, data_ptr: u32, data_le
     op.awaiting = false;
     if (status != 0) {
         setOperationError(op, error.WebUSBTransferFailed);
-        op.state = if (op.transaction_open and op.state != .send_final_end and op.state != .send_abort_end) .send_abort_end else .failed;
+        op.state = cleanupState(op);
         return 1;
     }
     completeTransfer(op, sliceConst(data_ptr, data_len)) catch |err| {
         setOperationError(op, err);
-        op.state = if (op.transaction_open) .send_abort_end else .failed;
+        op.state = cleanupState(op);
         return 1;
     };
     return 0;
@@ -340,6 +372,7 @@ export fn mp_operation_result(handle: u32) u32 {
     return switch (op.kind) {
         .read => setOperationResult(op, allocator().dupe(u8, op.data) catch return setError("out of memory")),
         .write => setOperationResult(op, allocator().dupe(u8, "null") catch return setError("out of memory")),
+        .pin_check => setOperationResult(op, pinCheckResultJson(op) catch return setError("out of memory")),
     };
 }
 
@@ -369,7 +402,7 @@ export fn mp_operation_abort(handle: u32) u32 {
     const op = operationFromHandle(handle);
     op.awaiting = false;
     setOperationError(op, error.OperationAborted);
-    op.state = if (op.transaction_open) .send_abort_end else .failed;
+    op.state = abortState(op);
     return 0;
 }
 
@@ -382,6 +415,7 @@ export fn mp_operation_total(handle: u32) u32 {
     const total = switch (op.kind) {
         .read => op.data.len,
         .write => if (isBlankCheckState(op.state)) memorySize(op.device, op.memory) else if (op.state == .verify_send_read_cmd or op.state == .verify_recv_read_payload) op.verify_data.len else op.data.len,
+        .pin_check => (op.device.pin_check orelse return 0).mask.len,
     };
     return @intCast(@min(total, std.math.maxInt(u32)));
 }
@@ -397,6 +431,34 @@ fn nextTransfer(op: *Operation) !Transfer {
             return outTransfer(op, endpoints.command, op.command[0..packet.system_info_request_len]);
         },
         .recv_info => return inTransfer(endpoints.command, packet.system_info_response_len),
+        .send_pin_reset, .send_abort_pin_reset => {
+            const pin_command: *[packet.pin_driver_len]u8 = @ptrCast(&op.command);
+            t48.writeResetPinDriversPacket(pin_command);
+            return outTransfer(op, endpoints.command, pin_command);
+        },
+        .send_pin_pulldowns => {
+            const pin_command: *[packet.pin_driver_len]u8 = @ptrCast(&op.command);
+            t48.writeSetInputPulldownsPacket(pin_command);
+            return outTransfer(op, endpoints.command, pin_command);
+        },
+        .send_pin_ground => {
+            const map = op.device.pin_check orelse return error.PinCheckUnavailable;
+            if (op.pin_ground_index >= map.gnd_pins.len) return error.PinCheckUnavailable;
+            const pin_command: *[packet.short_command_len]u8 = @ptrCast(&op.command);
+            try t48.writeSetPinOutputPacket(pin_command, map.gnd_pins[op.pin_ground_index], true);
+            return outTransfer(op, endpoints.command, pin_command);
+        },
+        .send_pin_read => {
+            const pin_command: *[packet.short_command_len]u8 = @ptrCast(&op.command);
+            t48.writeReadPinsPacket(pin_command);
+            return outTransfer(op, endpoints.command, pin_command);
+        },
+        .recv_pin_read => return inTransfer(endpoints.command, packet.pin_read_response_len),
+        .send_pin_cleanup => {
+            const pin_command: *[packet.pin_driver_len]u8 = @ptrCast(&op.command);
+            t48.writeResetPinDriversPacket(pin_command);
+            return outTransfer(op, endpoints.command, pin_command);
+        },
         .send_t56_bitstream_header, .send_post_id_t56_bitstream_header, .send_second_t56_bitstream_header, .send_post_blank_t56_bitstream_header, .send_verify_t56_bitstream_header => {
             @memset(op.command[0..packet.bitstream_header_len], 0);
             op.command[0] = command.write_bitstream;
@@ -494,7 +556,11 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             if (!op.device.supports(info.programmer)) return error.UnsupportedProgrammer;
             op.programmer = info.programmer;
             op.descriptor = op.device.descriptor(info.programmer);
-            if (op.kind == .read) {
+            if (op.kind == .pin_check) {
+                if (info.programmer != .t48 or !validPinCheck(op.device)) return error.PinCheckUnavailable;
+                op.state = .send_pin_reset;
+                return;
+            } else if (op.kind == .read) {
                 const size = memorySize(op.device, op.memory);
                 if (size == 0) return error.EmptyMemoryRegion;
                 op.data = try allocator().alloc(u8, size);
@@ -510,6 +576,35 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 op.payload = try allocator().alloc(u8, @max(@as(usize, op.descriptor.write_buffer_size), 1));
             }
             op.state = if (op.programmer == .t56) .send_t56_bitstream_header else .send_begin;
+        },
+        .send_pin_reset => {
+            op.pin_drivers_active = true;
+            op.state = .send_pin_pulldowns;
+        },
+        .send_pin_pulldowns => op.state = .send_pin_ground,
+        .send_pin_ground => {
+            const map = op.device.pin_check orelse return error.PinCheckUnavailable;
+            op.pin_ground_index += 1;
+            op.state = if (op.pin_ground_index < map.gnd_pins.len) .send_pin_ground else .send_pin_read;
+        },
+        .send_pin_read => op.state = .recv_pin_read,
+        .recv_pin_read => {
+            if (data.len < packet.pin_read_min_len) {
+                setShortRead(op, data.len, packet.pin_read_min_len);
+                return error.ShortRead;
+            }
+            op.pin_read = try t48.parsePinRead(data);
+            if (op.pin_read.overcurrent != 0) return error.Overcurrent;
+            op.offset = (op.device.pin_check orelse return error.PinCheckUnavailable).mask.len;
+            op.state = .send_pin_cleanup;
+        },
+        .send_pin_cleanup => {
+            op.pin_drivers_active = false;
+            op.state = .done;
+        },
+        .send_abort_pin_reset => {
+            op.pin_drivers_active = false;
+            op.state = .failed;
         },
         .send_t56_bitstream_header => op.state = .send_t56_bitstream_payload,
         .send_t56_bitstream_payload => op.state = .send_begin,
@@ -745,6 +840,42 @@ fn memorySize(device: catalog.DeviceRecord, memory: model.MemoryKind) usize {
     };
 }
 
+fn validPinCheck(device: catalog.DeviceRecord) bool {
+    const map = device.pin_check orelse return false;
+    const package = model.decodePackageDetails(device.package_details_raw);
+    if (!device.supports(.t48) or map.gnd_pins.len == 0 or map.mask.len == 0 or
+        package.pin_count == 0 or package.pin_count > packet.main_zif_pin_count or package.pin_count % 2 != 0) return false;
+    for (map.gnd_pins) |zif_pin| _ = devicePinNumber(zif_pin, package.pin_count) catch return false;
+    for (map.mask) |zif_pin| _ = devicePinNumber(zif_pin, package.pin_count) catch return false;
+    return true;
+}
+
+fn devicePinNumber(zif_pin: u8, package_pins: u8) !u8 {
+    if (zif_pin == 0 or zif_pin > packet.main_zif_pin_count) return error.PinCheckUnavailable;
+    const half = package_pins / 2;
+    const gap = packet.main_zif_pin_count - package_pins;
+    const device_pin = if (zif_pin <= half)
+        zif_pin
+    else if (zif_pin > packet.main_zif_pin_count - half)
+        zif_pin - gap
+    else
+        return error.PinCheckUnavailable;
+    if (device_pin == 0 or device_pin > package_pins) return error.PinCheckUnavailable;
+    return device_pin;
+}
+
+fn cleanupState(op: *Operation) State {
+    if (op.transaction_open and op.state != .send_final_end and op.state != .send_abort_end) return .send_abort_end;
+    if (op.pin_drivers_active and op.state != .send_pin_cleanup and op.state != .send_abort_pin_reset) return .send_abort_pin_reset;
+    return .failed;
+}
+
+fn abortState(op: *Operation) State {
+    if (op.transaction_open) return .send_abort_end;
+    if (op.pin_drivers_active) return .send_abort_pin_reset;
+    return .failed;
+}
+
 fn shouldCheckChipId(op: *Operation) bool {
     return !op.skip_id_check and op.device.chip_id != 0 and op.device.chip_id_bytes_count != 0;
 }
@@ -753,6 +884,7 @@ fn afterChipIdState(op: *Operation) State {
     return switch (op.kind) {
         .read => .send_read_cmd,
         .write => if (op.erase) .send_erase else if (!op.device.can_erase) .blank_send_read_cmd else if (op.unprotect_before) .send_protect_off else .send_write_cmd,
+        .pin_check => .send_pin_reset,
     };
 }
 
@@ -875,7 +1007,7 @@ fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void
     try writer.writeAll(",\"chipType\":");
     try writeJsonString(writer, chipTypeName(summary.chip_type));
     try writer.print(
-        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"canErase\":{},\"supportsUnprotect\":{},\"supportsProtect\":{},\"supportsT48\":{},\"supportsT56\":{}}}",
+        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"canErase\":{},\"supportsUnprotect\":{},\"supportsProtect\":{},\"supportsPinCheck\":{},\"supportsT48\":{},\"supportsT56\":{}}}",
         .{
             summary.code_memory_size,
             summary.data_memory_size,
@@ -888,10 +1020,38 @@ fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void
             summary.can_erase,
             summary.supports_unprotect,
             summary.supports_protect,
+            summary.supports_pin_check,
             summary.supports_t48,
             summary.supports_t56,
         },
     );
+}
+
+fn pinCheckResultJson(op: *Operation) ![]u8 {
+    const map = op.device.pin_check orelse return error.PinCheckUnavailable;
+    const package = model.decodePackageDetails(op.device.package_details_raw);
+    var out: std.Io.Writer.Allocating = .init(allocator());
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"passed\":");
+    var passed = true;
+    for (map.mask) |zif_pin| {
+        if (op.pin_read.high & (@as(u64, 1) << @intCast(zif_pin - 1)) == 0) passed = false;
+    }
+    try out.writer.print("{},\"checkedPins\":[", .{passed});
+    for (map.mask, 0..) |zif_pin, index| {
+        if (index != 0) try out.writer.writeByte(',');
+        try out.writer.print("{d}", .{try devicePinNumber(zif_pin, package.pin_count)});
+    }
+    try out.writer.writeAll("],\"badPins\":[");
+    var bad_index: usize = 0;
+    for (map.mask) |zif_pin| {
+        if (op.pin_read.high & (@as(u64, 1) << @intCast(zif_pin - 1)) != 0) continue;
+        if (bad_index != 0) try out.writer.writeByte(',');
+        bad_index += 1;
+        try out.writer.print("{d}", .{try devicePinNumber(zif_pin, package.pin_count)});
+    }
+    try out.writer.writeAll("]}");
+    return out.toOwnedSlice();
 }
 
 fn chipTypeName(chip_type: model.ChipType) []const u8 {
@@ -990,6 +1150,8 @@ fn errorCode(err: anyerror) u32 {
         error.WebUSBTransferFailed => 23,
         error.ShortRead => 24,
         error.TargetNotBlank => 25,
+        error.PinCheckUnavailable => 26,
+        error.ProtectionUnsupported => 27,
         else => 1,
     };
 }
@@ -997,12 +1159,13 @@ fn errorCode(err: anyerror) u32 {
 fn phaseCode(state: State) u32 {
     return switch (state) {
         .send_info, .recv_info, .send_t56_bitstream_header, .send_t56_bitstream_payload, .send_begin, .send_begin_status, .recv_begin_status, .send_post_id_t56_bitstream_header, .send_post_id_t56_bitstream_payload, .send_post_id_begin, .send_post_id_status, .recv_post_id_status, .send_second_t56_bitstream_header, .send_second_t56_bitstream_payload, .send_second_begin, .send_second_status, .recv_second_status, .send_post_blank_t56_bitstream_header, .send_post_blank_t56_bitstream_payload, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => 1,
+        .send_pin_reset, .send_pin_pulldowns, .send_pin_ground, .send_pin_read, .recv_pin_read => 5,
         .send_chip_id, .recv_chip_id, .send_end_after_chip_id => 2,
         .send_erase, .recv_erase, .send_end_after_erase => 3,
         .send_protect_off, .send_protect_off_status, .recv_protect_off_status, .send_write_cmd, .send_write_payload, .send_write_status, .recv_write_status, .send_protect_on, .send_protect_on_status, .recv_protect_on_status => 4,
         .blank_send_read_cmd, .blank_recv_read_payload, .blank_send_read_status, .blank_recv_read_status, .send_end_after_blank, .send_read_cmd, .recv_read_payload, .send_read_status, .recv_read_status => 5,
         .send_end_before_verify, .send_verify_t56_bitstream_header, .send_verify_t56_bitstream_payload, .send_verify_begin, .send_verify_begin_status, .recv_verify_begin_status, .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
-        .send_final_end, .send_abort_end => 7,
+        .send_pin_cleanup, .send_abort_pin_reset, .send_final_end, .send_abort_end => 7,
         .done => 8,
         .failed => 9,
     };
@@ -1226,6 +1389,94 @@ test "Wasm system info probe requests the full response buffer" {
     };
 
     try expectNextTransfer(&op, .in, endpoints.command, packet.system_info_response_len);
+}
+
+test "T48 Wasm pin check resets drivers and reports device pins" {
+    var op = Operation{
+        .kind = .pin_check,
+        .requested_programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_info,
+    };
+    var info = [_]u8{0} ** packet.system_info_response_min_len;
+    info[4] = 1;
+    info[6] = 7;
+
+    try completeTransfer(&op, &info);
+    try std.testing.expectEqual(State.send_pin_reset, op.state);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.pin_driver_len);
+    try std.testing.expectEqual(command.reset_pin_drivers, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.pin_driver_len);
+    try std.testing.expectEqual(command.set_pulldowns, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.set_pin_output, op.command[0]);
+    try std.testing.expectEqual(@as(u8, 13), op.command[4]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.read_pins, op.command[0]);
+    try completeTransfer(&op, &.{});
+
+    var pins = [_]u8{0xff} ** packet.pin_read_response_len;
+    pins[1] = 0;
+    pins[8] &= ~@as(u8, 0x02);
+    try completeTransfer(&op, &pins);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.pin_driver_len);
+    try std.testing.expectEqual(command.reset_pin_drivers, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try std.testing.expectEqual(State.done, op.state);
+
+    const result = try pinCheckResultJson(&op);
+    defer allocator().free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"passed\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"badPins\":[2]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "28]") != null);
+}
+
+test "T48 Wasm pin-check failures require driver reset cleanup" {
+    var op = Operation{
+        .kind = .pin_check,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_pin_read,
+        .pin_drivers_active = true,
+    };
+    var pins = [_]u8{0} ** packet.pin_read_response_len;
+    pins[1] = 1;
+
+    try std.testing.expectError(error.Overcurrent, completeTransfer(&op, &pins));
+    op.state = cleanupState(&op);
+    try std.testing.expectEqual(State.send_abort_pin_reset, op.state);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.pin_driver_len);
+    try std.testing.expectEqual(command.reset_pin_drivers, op.command[0]);
+
+    op.state = .recv_pin_read;
+    try std.testing.expectError(error.ShortRead, completeTransfer(&op, pins[0 .. packet.pin_read_min_len - 1]));
+    try std.testing.expectEqual(packet.pin_read_min_len, op.short_read_required);
+}
+
+test "aborting before T48 pin cleanup still resets drivers" {
+    var op = Operation{
+        .kind = .pin_check,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .send_pin_cleanup,
+        .pin_drivers_active = true,
+    };
+
+    op.state = abortState(&op);
+    try std.testing.expectEqual(State.send_abort_pin_reset, op.state);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.pin_driver_len);
+    try std.testing.expectEqual(command.reset_pin_drivers, op.command[0]);
 }
 
 test "Wasm system info ShortRead reports the protocol minimum" {

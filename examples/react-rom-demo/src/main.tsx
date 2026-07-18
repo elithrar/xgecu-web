@@ -242,6 +242,58 @@ function App() {
     }
   }
 
+  async function checkPins() {
+    if (!api || !programmer || !selectedSummary?.supportsPinCheck || activeToken.current) return;
+    const token = Symbol("pin-check");
+    activeToken.current = token;
+    const controller = new AbortController();
+    const operationId = `pin-check-${++operationSequence.current}`;
+    setBusy(true);
+    activeAbort.current = controller;
+    setStatus(`Checking contacts for ${selectedDevice}...`);
+    appendLog("info", "pin_check_started", {
+      operation_id: operationId,
+      target_device: selectedDevice,
+      programmer: programmerFields(programmer)
+    });
+    try {
+      const operation = api.checkPinContacts({
+        programmer,
+        device: selectedDevice,
+        signal: controller.signal
+      });
+      activeOperation.current = operation;
+      const result = await operation;
+      if (result.passed) {
+        setStatus(`Contact check passed on ${result.checkedPins.length} device pins.`);
+      } else {
+        setStatus(`Check contact on device pins: ${result.badPins.join(", ")}.`);
+      }
+      appendLog(result.passed ? "info" : "error", "pin_check_completed", {
+        operation_id: operationId,
+        target_device: selectedDevice,
+        passed: result.passed,
+        checked_pins: result.checkedPins,
+        bad_pins: result.badPins
+      });
+    } catch (error) {
+      setStatus(errorMessage(error));
+      appendLog("error", "pin_check_failed", {
+        operation_id: operationId,
+        target_device: selectedDevice,
+        programmer: programmerFields(programmer),
+        ...errorFields(error)
+      });
+    } finally {
+      if (activeToken.current === token) {
+        activeToken.current = null;
+        activeAbort.current = null;
+        activeOperation.current = null;
+        setBusy(false);
+      }
+    }
+  }
+
   async function writeRom() {
     if (!api || !programmer || !writeImage || !backup || !selectedSummary || !confirmWrite || activeToken.current) return;
     if (backup.target !== selectedDevice || backup.connectionId !== connectionSequence.current) return;
@@ -394,6 +446,16 @@ function App() {
           ) : (
             <Banner variant="error" title="Selected device is not in the current search results" />
           )}
+          <Button
+            variant="secondary"
+            disabled={!api || !programmer || busy || !selectedSummary?.supportsPinCheck}
+            onClick={() => void checkPins()}
+          >
+            Check pin contacts
+          </Button>
+          {selectedSummary && !selectedSummary.supportsPinCheck ? (
+            <Text variant="secondary">No T48 pin-contact map is available for this target.</Text>
+          ) : null}
         </LayerCard.Primary>
       </LayerCard>
 

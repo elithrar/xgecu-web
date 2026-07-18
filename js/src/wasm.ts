@@ -11,6 +11,7 @@ export interface WasmExports {
   mp_last_error_len(): number;
   mp_device_list(queryPtr: number, queryLen: number, programmer: number, limit: number): number;
   mp_device_detail(devicePtr: number, deviceLen: number, programmer: number): number;
+  mp_start_pin_check(programmer: number, devicePtr: number, deviceLen: number): number;
   mp_start_read_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, skipIdCheck: number, continueOnIdMismatch: number): number;
   mp_start_write_rom(
     programmer: number,
@@ -115,6 +116,18 @@ export class WasmBridge {
     });
   }
 
+  startPinCheck(options: { programmer: "auto" | "t48"; device: string }): WasmOperationHandle {
+    const programmer = programmerToAbi(options.programmer);
+    const deviceBytes = textEncoder.encode(options.device);
+    return this.withBytes(deviceBytes, (devicePtr) => {
+      const handle = this.exports.mp_start_pin_check(programmer, devicePtr, deviceBytes.byteLength);
+      if (handle === 0) {
+        throw new XgecuWebUSBError(this.lastError() || "Failed to start pin-contact check.", "PinCheckUnavailable");
+      }
+      return this.registerOperation(handle);
+    });
+  }
+
   startWriteROM(options: {
     programmer: ProgrammerKind;
     device: string;
@@ -198,8 +211,6 @@ export class WasmBridge {
     try {
       for (;;) {
         if (options.signal?.aborted) {
-          this.exports.mp_operation_abort(handle);
-          await this.drainCleanupBestEffort(handle, performTransfer);
           throw new XgecuWebUSBError("Operation aborted.", "OperationAborted");
         }
         const kind = this.exports.mp_operation_next(handle);
@@ -219,7 +230,6 @@ export class WasmBridge {
           }
           const rc = this.exports.mp_operation_complete(handle, 0, 0, 0);
           if (rc !== 0) {
-            await this.drainCleanupBestEffort(handle, performTransfer);
             throw this.operationError(handle);
           }
           await emitProgress();
@@ -241,7 +251,6 @@ export class WasmBridge {
             rc = this.exports.mp_operation_complete(handle, 0, ptr, bytes.byteLength);
           });
           if (rc !== 0) {
-            await this.drainCleanupBestEffort(handle, performTransfer);
             throw this.operationError(handle);
           }
           await emitProgress();
@@ -258,7 +267,7 @@ export class WasmBridge {
           // Preserve the lifecycle failure even if a caller's notification hook fails.
         }
         throw new XgecuWebUSBError(
-          "The ROM operation failed and the programmer transaction could not be closed. Reconnect the programmer before continuing.",
+          "The programmer operation failed and its hardware cleanup could not be completed. Reconnect the programmer before continuing.",
           "WebUSBLifecycleFailed",
           error
         );

@@ -19,6 +19,10 @@
       "voltagesRaw": "0x0200",
       "chipInfo": 0,
       "pinMap": "0x13",
+      "pinCheck": {
+        "gndPins": [14],
+        "mask": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 40]
+      },
       "dataMemorySize": 0,
       "dataMemory2Size": 0,
       "pageSize": 64,
@@ -41,6 +45,10 @@
       "voltagesRaw": "0x4000",
       "chipInfo": "0x0006",
       "pinMap": "0x15",
+      "pinCheck": {
+        "gndPins": [14],
+        "mask": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 40]
+      },
       "dataMemorySize": 0,
       "dataMemory2Size": 0,
       "pageSize": 0,

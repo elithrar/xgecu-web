@@ -4,6 +4,11 @@ const model = @import("../core/model.zig");
 const t48 = @import("../programmer/t48.zig");
 const protocol = @import("../programmer/protocol.zig");
 
+pub const PinCheck = struct {
+    gnd_pins: []const u8,
+    mask: []const u8,
+};
+
 pub const DeviceRecord = struct {
     canonical_name: []const u8,
     aliases: []const []const u8,
@@ -14,6 +19,7 @@ pub const DeviceRecord = struct {
     voltages_raw: u32,
     chip_info: u32,
     pin_map: u32,
+    pin_check: ?PinCheck = null,
     data_memory_size: u32,
     data_memory2_size: u32,
     page_size: u32,
@@ -69,6 +75,7 @@ pub const DeviceSummary = struct {
     can_erase: bool,
     supports_unprotect: bool,
     supports_protect: bool,
+    supports_pin_check: bool,
     supports_t48: bool,
     supports_t56: bool,
 };

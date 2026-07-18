@@ -1,4 +1,4 @@
-import { DeviceDetail, DeviceListQuery, DeviceSummary, ProgrammerConnection, ProgrammerInfo, ReadROMOptions, USBDeviceLike, USBNavigatorLike, WriteROMOptions, XgecuWebUSB } from './types';
+import { DeviceDetail, DeviceListQuery, DeviceSummary, PinCheckOptions, PinCheckResult, ProgrammerConnection, ProgrammerInfo, ReadROMOptions, USBDeviceLike, USBNavigatorLike, WriteROMOptions, XgecuWebUSB } from './types';
 import { WasmBridge, UsbTransfer } from './wasm';
 export declare class WebUSBProgrammerConnection implements ProgrammerConnection {
     readonly device: USBDeviceLike;
@@ -24,6 +24,7 @@ export declare class BrowserXgecuWebUSB implements XgecuWebUSB {
     requestProgrammer(): Promise<ProgrammerConnection>;
     connectProgrammer(device: USBDeviceLike): Promise<ProgrammerConnection>;
     readROM(options: ReadROMOptions): Promise<Uint8Array>;
+    checkPinContacts(options: PinCheckOptions): Promise<PinCheckResult>;
     writeROM(options: WriteROMOptions): Promise<void>;
 }
 export declare function createProgrammer(options?: {

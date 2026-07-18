@@ -30,6 +30,17 @@ const abortController = new AbortController();
 const programmer = await api.requestProgrammer();
 
 try {
+  if (target.supportsPinCheck) {
+    const contacts = await api.checkPinContacts({
+      programmer,
+      device: targetDevice,
+      signal: abortController.signal
+    });
+    if (!contacts.passed) {
+      throw new Error(`Reseat the chip and check device pins: ${contacts.badPins.join(", ")}`);
+    }
+  }
+
   // Always read and save a backup before writing an automotive EEPROM.
   const original = await api.readROM({
     programmer,
@@ -105,6 +116,7 @@ Minimal HTML for the patched image input:
 Keep these checks in your app:
 
 - Match the catalog entry to the chip marking and package before calling `writeROM`.
+- Run `checkPinContacts` when the target advertises `supportsPinCheck`; a pass does not identify the target or prove its orientation.
 - Confirm chip orientation and adapter/pinout; WebUSB permission cannot validate the inserted target.
 - Confirm the downloaded backup was saved before continuing.
 - Keep `verify: true`.

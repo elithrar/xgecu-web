@@ -228,6 +228,7 @@ function fakeExports(): MutableWasmExports {
     mp_last_error_len: vi.fn(() => encoder.encode(fake.error).byteLength),
     mp_device_list: vi.fn(() => 0),
     mp_device_detail: vi.fn(() => 0),
+    mp_start_pin_check: vi.fn(() => 3),
     mp_start_read_rom: vi.fn(() => 1),
     mp_start_write_rom: vi.fn(() => 2),
     mp_operation_next: vi.fn(() => {

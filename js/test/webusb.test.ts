@@ -177,6 +177,24 @@ describe("BrowserXgecuWebUSB", () => {
     expect(runOperation).toHaveBeenCalledOnce();
   });
 
+  it("runs an explicit T48 pin-contact check and returns device pin numbers", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    const startPinCheck = vi.spyOn(wasm, "startPinCheck");
+    vi.spyOn(wasm, "runOperation").mockResolvedValue(
+      new TextEncoder().encode('{"passed":false,"checkedPins":[2,3,28],"badPins":[2]}')
+    );
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.checkPinContacts({ programmer, device: "AT28C64B" })).resolves.toEqual({
+      passed: false,
+      checkedPins: [2, 3, 28],
+      badPins: [2]
+    });
+    expect(startPinCheck).toHaveBeenCalledWith({ programmer: "auto", device: "AT28C64B" });
+  });
+
   it("configures and claims already-open devices before reads", async () => {
     const device = new FakeDevice();
     device.opened = true;
@@ -355,6 +373,28 @@ describe("BrowserXgecuWebUSB", () => {
     expect(startWriteROM).toHaveBeenCalledWith(expect.objectContaining({ erase: false }));
   });
 
+  it("rejects unsupported protection requests before starting Wasm", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "resolveDevice").mockReturnValue({
+      ...fakeDeviceSummary(),
+      aliases: ["AT28C64B"],
+      supportsUnprotect: false,
+      supportsProtect: false
+    });
+    const startWriteROM = vi.spyOn(wasm, "startWriteROM");
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.writeROM({
+      programmer,
+      device: "AT28C64B",
+      data: new Uint8Array(8192),
+      unprotectBefore: true
+    })).rejects.toMatchObject({ code: "ProtectionUnsupported" });
+    expect(startWriteROM).not.toHaveBeenCalled();
+  });
+
   it("rejects erase writes outside code memory", async () => {
     const device = new FakeDevice();
     const wasm = fakeWasm();
@@ -516,6 +556,7 @@ function fakeWasm(): WasmBridge {
   return {
     deviceList: () => [fakeDeviceSummary()],
     resolveDevice: () => fakeDeviceSummary(),
+    startPinCheck: () => 3,
     startReadROM: () => 1,
     startWriteROM: () => 2,
     runOperation: async (_handle: number, performTransfer: UsbTransferHandler) => {
@@ -541,6 +582,7 @@ function fakeDeviceSummary() {
     canErase: true,
     supportsUnprotect: true,
     supportsProtect: true,
+    supportsPinCheck: true,
     supportsT48: true,
     supportsT56: false
   } as const;

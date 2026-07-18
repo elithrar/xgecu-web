@@ -14,6 +14,8 @@ export type {
   DeviceListQuery,
   DeviceSummary,
   MemoryKind,
+  PinCheckOptions,
+  PinCheckResult,
   ProgrammerConnection,
   ProgrammerInfo,
   ProgrammerKind,

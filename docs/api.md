@@ -29,6 +29,7 @@ interface DeviceSummary {
   canErase: boolean;
   supportsUnprotect: boolean;
   supportsProtect: boolean;
+  supportsPinCheck: boolean;
   supportsT48: boolean;
   supportsT56: boolean;
 }
@@ -69,7 +70,7 @@ try {
 }
 ```
 
-Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `TargetNotBlank`, `AlgorithmUnavailable`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
+Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `TargetNotBlank`, `PinCheckUnavailable`, `ProtectionUnsupported`, `AlgorithmUnavailable`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
 
 ## `createProgrammer(options?)`
 
@@ -148,6 +149,7 @@ const target = api.resolveDevice("AT28C64B", "t48");
 if (!target) throw new Error("Target is not in the catalog.");
 console.log(target.canErase); // Programmer-issued electrical erase support.
 console.log(target.supportsUnprotect, target.supportsProtect);
+console.log(target.supportsPinCheck); // Explicit T48 contact check support.
 ```
 
 ## `requestProgrammer()`
@@ -186,6 +188,25 @@ The returned `Uint8Array` length is the catalogued memory size for the selected 
 Leave `skipIdCheck` at its default `false` unless you have an independent target-identification step.
 Pass an `AbortSignal` as `signal` to cancel before the next USB transfer.
 Progress callbacks are emitted when the public phase, offset, or total changes; internal USB transfers that leave all three values unchanged do not produce duplicate events. Async callbacks are awaited, and a rejected callback aborts the operation.
+
+## `checkPinContacts(options)`
+
+Runs an explicit, non-programming contact check for catalogued T48 targets. The operation resets the pin drivers, enables input pulldowns, drives the catalogued ground pin through the T48 logic output, samples the contact mask, and resets the drivers on success or failure.
+
+```ts
+const result = await api.checkPinContacts({
+  programmer,
+  device: "AT28C64B@DIP28",
+  programmerKind: "t48",
+  signal: abortController.signal
+});
+
+if (!result.passed) {
+  throw new Error(`Check contact on device pins: ${result.badPins.join(", ")}`);
+}
+```
+
+`checkedPins` and `badPins` use device package pin numbers, not T48 ZIF positions. Ground and other electrically unsuitable pins are omitted from `checkedPins`. A passing result increases confidence in physical contact; it does not identify the chip or prove its orientation. The method throws `PinCheckUnavailable` for unsupported targets or non-T48 programmers and treats overcurrent as a hard failure.
 
 ## `writeROM(options)`
 
@@ -247,8 +268,8 @@ await api.writeROM({
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 `eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
 Hardware-affecting options are runtime-validated. Unknown enum values, non-boolean flags, and fuse/PLD values outside the integer range 0-255 throw `InvalidInput` before USB work begins.
-`DeviceSummary.supportsUnprotect` and `DeviceSummary.supportsProtect` report capabilities, not required policy. Keep both write options explicit because changing protection is hardware-affecting; do not infer prior state or automatically re-protect a chip after writing.
-Only one ROM operation may be active per physical programmer; overlapping calls and connection closes throw `OperationInProgress`.
+`DeviceSummary.supportsUnprotect` and `DeviceSummary.supportsProtect` report capabilities, not required policy. Unsupported requests throw `ProtectionUnsupported`. Keep both write options explicit because changing protection is hardware-affecting; do not infer prior state or automatically re-protect a chip after writing.
+Only one programmer operation may be active per physical programmer; overlapping calls and connection closes throw `OperationInProgress`.
 
 For a complete backup-then-write browser flow, including image length checks, see `docs/examples.md`.
 

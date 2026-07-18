@@ -13,6 +13,14 @@ const at28c64b_dip28_aliases = [_][]const u8{
 const at28c64b_dip28_programmers = [_]model.Programmer{
     .t48,
 };
+const at28c64b_dip28_pin_check_gnd_pins = [_]u8{
+    0x0e,
+};
+const at28c64b_dip28_pin_check_mask = [_]u8{
+    0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+    0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x27,
+    0x28,
+};
 
 const m27c64a_dip28_aliases = [_][]const u8{
     "M27C64A",
@@ -20,6 +28,14 @@ const m27c64a_dip28_aliases = [_][]const u8{
 };
 const m27c64a_dip28_programmers = [_]model.Programmer{
     .t48,
+};
+const m27c64a_dip28_pin_check_gnd_pins = [_]u8{
+    0x0e,
+};
+const m27c64a_dip28_pin_check_mask = [_]u8{
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+    0x0d, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+    0x27, 0x28,
 };
 
 pub const devices = [_]schema.DeviceRecord{
@@ -33,6 +49,7 @@ pub const devices = [_]schema.DeviceRecord{
         .voltages_raw = 0x200,
         .chip_info = 0,
         .pin_map = 0x13,
+        .pin_check = .{ .gnd_pins = &at28c64b_dip28_pin_check_gnd_pins, .mask = &at28c64b_dip28_pin_check_mask },
         .data_memory_size = 0,
         .data_memory2_size = 0,
         .page_size = 64,
@@ -55,6 +72,7 @@ pub const devices = [_]schema.DeviceRecord{
         .voltages_raw = 0x4000,
         .chip_info = 0x6,
         .pin_map = 0x15,
+        .pin_check = .{ .gnd_pins = &m27c64a_dip28_pin_check_gnd_pins, .mask = &m27c64a_dip28_pin_check_mask },
         .data_memory_size = 0,
         .data_memory2_size = 0,
         .page_size = 0,
