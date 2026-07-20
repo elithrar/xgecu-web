@@ -197,7 +197,7 @@ pub fn writeROM(
         protocol_open = true;
     }
 
-    if (!options.erase and !device.can_erase) {
+    if (options.erase or !device.can_erase) {
         try ensureBlank(allocator, info.programmer, trans, device, descriptor, options.memory, size);
         try protocol.end(info.programmer, trans);
         protocol_open = false;
@@ -540,6 +540,29 @@ test "writeROM rejects a nonblank UV EPROM before programming" {
             .skip_id_check = true,
         }),
     );
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) == null);
+}
+
+test "writeROM blank-checks an electrically erased target before programming" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[6] = 7;
+    var target = [_]u8{0xff} ** 8192;
+    target[0] = 0;
+    var data = [_]u8{0xaa} ** 8192;
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    fake.payload_response = &target;
+    defer fake.deinit();
+
+    try std.testing.expectError(
+        Error.TargetNotBlank,
+        writeROM(std.testing.allocator, fake.transport(), "AT28C64B", &data, .{
+            .programmer = .t48,
+            .skip_id_check = true,
+        }),
+    );
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.erase) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) == null);
 }
