@@ -162,6 +162,12 @@ pub fn writeROM(
     if (options.protect_after and !flags.protect_after) return Error.ProtectionUnsupported;
 
     const descriptor = device.descriptor(info.programmer);
+    // Reserve blank-check storage before erase so allocation failure cannot strand an erased target.
+    var blank_buffer: ?[]u8 = null;
+    if (options.erase or !device.can_erase) {
+        blank_buffer = try allocator.alloc(u8, readChunkSize(info.programmer, descriptor));
+    }
+    defer if (blank_buffer) |buffer| allocator.free(buffer);
     var protocol_open = false;
     const first_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
     defer first_ctx.deinit(allocator);
@@ -198,7 +204,7 @@ pub fn writeROM(
     }
 
     if (options.erase or !device.can_erase) {
-        try ensureBlank(allocator, info.programmer, trans, device, descriptor, options.memory, size);
+        try ensureBlank(info.programmer, trans, device, options.memory, size, blank_buffer.?);
         try protocol.end(info.programmer, trans);
         protocol_open = false;
         post_blank_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
@@ -273,20 +279,17 @@ fn shouldCheckChipId(device: catalog.DeviceRecord, policy: ChipIdPolicy) bool {
 }
 
 fn ensureBlank(
-    allocator: std.mem.Allocator,
     programmer: model.Programmer,
     trans: transport_mod.Transport,
     device: catalog.DeviceRecord,
-    descriptor: t48.Device,
     memory: model.MemoryKind,
     size: usize,
+    buffer: []u8,
 ) Error!void {
-    const chunk_size = readChunkSize(programmer, descriptor);
-    const buffer = try allocator.alloc(u8, chunk_size);
-    defer allocator.free(buffer);
+    std.debug.assert(buffer.len != 0);
     var offset: usize = 0;
     while (offset < size) {
-        const len = @min(chunk_size, size - offset);
+        const len = @min(buffer.len, size - offset);
         try protocol.readBlock(programmer, trans, memory, @intCast(offset), buffer[0..len]);
         try checkReadStatus(programmer, trans);
         for (buffer[0..len]) |byte| {
@@ -564,5 +567,26 @@ test "writeROM blank-checks an electrically erased target before programming" {
     );
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.erase) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) == null);
+}
+
+test "writeROM allocates blank-check storage before electrical erase" {
+    var response = [_]u8{0} ** 80;
+    response[4] = 1;
+    response[6] = 7;
+    var data = [_]u8{0xaa} ** 8192;
+    var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+    defer fake.deinit();
+    var storage: [0]u8 = .{};
+    var fixed = std.heap.FixedBufferAllocator.init(&storage);
+
+    try std.testing.expectError(
+        error.OutOfMemory,
+        writeROM(fixed.allocator(), fake.transport(), "AT28C64B", &data, .{
+            .programmer = .t48,
+            .skip_id_check = true,
+        }),
+    );
+    try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.erase) == null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) == null);
 }
