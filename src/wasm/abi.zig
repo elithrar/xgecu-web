@@ -655,7 +655,8 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         .send_second_status => op.state = .recv_second_status,
         .recv_second_status => {
             try checkStatus(op, data);
-            op.state = if (op.unprotect_before) .send_protect_off else .send_write_cmd;
+            op.offset = 0;
+            op.state = .blank_send_read_cmd;
         },
         .send_protect_off => op.state = .send_protect_off_status,
         .send_protect_off_status => op.state = .recv_protect_off_status,
@@ -1376,6 +1377,28 @@ test "Wasm blank check uses a separate write transaction" {
     try completeTransfer(&op, &.{});
     try expectNextTransfer(&op, .out, endpoints.command, packet.begin_len);
     try std.testing.expectEqual(command.begin_transaction, op.command[0]);
+}
+
+test "Wasm blank-checks after an electrical erase" {
+    var write_data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t48,
+        .programmer = .t48,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t48),
+        .memory = .code,
+        .state = .recv_second_status,
+        .data = &write_data,
+        .erase = true,
+        .skip_id_check = true,
+        .transaction_open = true,
+    };
+    var status = [_]u8{0} ** packet.status_len;
+
+    try completeTransfer(&op, &status);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.read_code, op.command[0]);
 }
 
 test "Wasm system info probe requests the full response buffer" {

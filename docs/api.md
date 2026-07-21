@@ -263,7 +263,7 @@ await api.writeROM({
 });
 ```
 
-`erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`.
+`erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`. After an electrical erase, the operation reads the full selected memory region and rejects the write unless every byte equals `blankValue`.
 `DeviceSummary.canErase` reports whether the programmer can electrically erase the target. `writeROM` rejects erase requests when it is false. A UV EPROM must be externally erased and written with `erase: false`; immediately before programming, the operation reads the full selected memory region and throws `TargetNotBlank` unless every byte equals `blankValue`.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 `eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
