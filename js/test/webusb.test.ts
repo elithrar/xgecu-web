@@ -173,8 +173,35 @@ describe("BrowserXgecuWebUSB", () => {
     const programmer = await api.requestProgrammer();
     const data = await api.readROM({ programmer, device: "AT28C64B", skipIdCheck: true });
 
-    expect(data).toEqual(new Uint8Array([0x42]));
+    expect(data).toHaveLength(8192);
+    expect(data[0]).toBe(0x42);
     expect(runOperation).toHaveBeenCalledOnce();
+  });
+
+  it("rejects incomplete readROM results returned by the Wasm boundary", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "runOperation").mockResolvedValue(new Uint8Array(8191));
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({
+      code: "ShortRead",
+      message: "readROM returned 8191 of 8192 expected bytes for the selected memory region."
+    });
+  });
+
+  it("rejects oversized readROM results returned by the Wasm boundary", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "runOperation").mockResolvedValue(new Uint8Array(8193));
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const programmer = await api.requestProgrammer();
+
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({
+      code: "InvalidInput",
+      message: "readROM returned 8193 of 8192 expected bytes for the selected memory region."
+    });
   });
 
   it("runs an explicit T48 pin-contact check and returns device pin numbers", async () => {
@@ -423,7 +450,7 @@ describe("BrowserXgecuWebUSB", () => {
     vi.spyOn(wasm, "runOperation").mockImplementation(
       () =>
         new Promise<Uint8Array>((resolve) => {
-          release = () => resolve(new Uint8Array([0x42]));
+          release = () => resolve(fakeReadResult());
         })
     );
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
@@ -440,7 +467,7 @@ describe("BrowserXgecuWebUSB", () => {
     let release!: () => void;
     const wasm = fakeWasm();
     vi.spyOn(wasm, "runOperation").mockImplementation(() => new Promise<Uint8Array>((resolve) => {
-      release = () => resolve(new Uint8Array([0x42]));
+      release = () => resolve(fakeReadResult());
     }));
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
     const programmer = await api.connectProgrammer(device);
@@ -458,7 +485,7 @@ describe("BrowserXgecuWebUSB", () => {
     let release!: () => void;
     const wasm = fakeWasm();
     vi.spyOn(wasm, "runOperation").mockImplementation(() => new Promise<Uint8Array>((resolve) => {
-      release = () => resolve(new Uint8Array([0x42]));
+      release = () => resolve(fakeReadResult());
     }));
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
     const programmer = await api.connectProgrammer(device);
@@ -561,9 +588,13 @@ function fakeWasm(): WasmBridge {
     startWriteROM: () => 2,
     runOperation: async (_handle: number, performTransfer: UsbTransferHandler) => {
       await performTransfer({ direction: "out", endpoint: 1, data: new Uint8Array([0]) });
-      return new Uint8Array([0x42]);
+      return fakeReadResult();
     }
   } as unknown as WasmBridge;
+}
+
+function fakeReadResult() {
+  return new Uint8Array(8192).fill(0x42);
 }
 
 function fakeDeviceSummary() {
