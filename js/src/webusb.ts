@@ -167,6 +167,10 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
     } as const;
     const usbDevice = operation.programmer.device;
     return withProgrammerOperation(usbDevice, async () => {
+      const device = this.wasm.resolveDevice(operation.device, operation.programmerKind);
+      if (!device) throw new XgecuWebUSBError("Device not found or unsupported by requested programmer.", "DeviceNotFound");
+      const size = memorySize(device, operation.memory);
+      if (size === 0) throw new XgecuWebUSBError("Selected memory region is empty.", "EmptyMemoryRegion");
       await ensureReady(usbDevice);
       const handle = this.wasm.startReadROM({
         programmer: operation.programmerKind,
@@ -175,11 +179,19 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
         skipIdCheck: operation.skipIdCheck,
         continueOnIdMismatch: operation.continueOnIdMismatch
       });
-      return this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(usbDevice, transfer), {
+      const bytes = await this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(usbDevice, transfer), {
         signal: operation.signal,
         onProgress: operation.onProgress,
         onCleanupFailure: () => markProgrammerPoisoned(usbDevice)
       });
+      if (bytes.byteLength !== size) {
+        const code = bytes.byteLength < size ? "ShortRead" : "InvalidInput";
+        throw new XgecuWebUSBError(
+          `readROM returned ${bytes.byteLength} of ${size} expected bytes for the selected memory region.`,
+          code
+        );
+      }
+      return bytes;
     });
   }
 
