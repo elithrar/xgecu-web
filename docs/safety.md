@@ -12,7 +12,7 @@ Programming ROMs from a browser is powerful and destructive.
 - UV EPROM parts such as `M27C64A@DIP28` require external erasure. The API rejects `erase: true` when `canErase` is false and performs a full blank check immediately before an `erase: false` write.
 - Leave chip ID checks enabled unless the catalog does not include an ID for the exact part and you have an external identification step.
 - Choose `erase` explicitly from the resolved target's `canErase` metadata and keep `verify: true` enabled. The write operation blank-checks the target after electrical erase. Use `erase: false` for a non-electrically-erasable target only after external erasure; the operation blank-checks that target immediately before programming too.
-- Use the target's `supportsUnprotect` and `supportsProtect` metadata to validate explicit choices. Unsupported requests fail with `ProtectionUnsupported`. Do not infer prior protection state or automatically re-protect after writing.
+- Use the target's `supportsUnprotect` and `supportsProtect` metadata to validate explicit choices. Unsupported requests fail with `ProtectionUnsupported`. T76 automatically performs catalog-required unprotection before erase and restarts the transaction; the library does not infer prior protection state or automatically re-protect after writing.
 - An erase write is restricted to code memory and must provide an image exactly matching that region. Data/user-memory and partial writes require explicit `erase: false`; device-specific algorithms may still affect adjacent state.
 - Do not remove the device while an operation is running.
 - If transaction cleanup fails, reconnect the programmer before any further operation. The high-level API closes and quarantines that connection.

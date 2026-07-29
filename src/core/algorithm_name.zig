@@ -44,20 +44,21 @@ fn resolveUtility(buffer: []u8, programmer: model.Programmer, algorithm_number: 
 }
 
 const algorithm_prefixes = [_][]const u8{
-    "IIC24C", "MW93ALG", "SPI25F", "AT45D", "F29EE", "W29F32P",
-    "ROM28P", "ROM32P", "ROM40P", "R28TO32P", "ROM24P", "ROM44",
-    "EE28C32P", "RAM32", "SPI25F", "28F32P", "FWH", "T48",
-    "T40A", "T40B", "T88V", "PIC32X", "P18F87J", "P16F",
-    "P18F2", "P16F5X", "P16CX", "", "ATMGA_", "ATTINY_",
-    "AT89P20_", "", "AT89C_", "P87C_", "SST89_", "W78E_",
-    "", "", "ROM24P", "ROM28P", "RAM32", "GAL16",
-    "GAL20", "GAL22", "NAND_", "PIC32X", "RAM36", "KB90",
-    "EMMC_", "VGA_", "CPLD_", "GEN_", "ITE_",
+    "IIC24C",   "MW93ALG", "SPI25F", "AT45D",    "F29EE",   "W29F32P",
+    "ROM28P",   "ROM32P",  "ROM40P", "R28TO32P", "ROM24P",  "ROM44",
+    "EE28C32P", "RAM32",   "SPI25F", "28F32P",   "FWH",     "T48",
+    "T40A",     "T40B",    "T88V",   "PIC32X",   "P18F87J", "P16F",
+    "P18F2",    "P16F5X",  "P16CX",  "",         "ATMGA_",  "ATTINY_",
+    "AT89P20_", "",        "AT89C_", "P87C_",    "SST89_",  "W78E_",
+    "",         "",        "ROM24P", "ROM28P",   "RAM32",   "GAL16",
+    "GAL20",    "GAL22",   "NAND_",  "PIC32X",   "RAM36",   "KB90",
+    "EMMC_",    "VGA_",    "CPLD_",  "GEN_",     "ITE_",
 };
 
 const t56_utility_algorithms = [_][]const u8{
-    "TTL1", "TTL2", "Pindect100M", "STGND", "StPVGI", "uart_vga", "vga_11", "vga_21",
-    "vga1024x768", "vga1152x864", "vga1280x1024", "vga1280x800", "vga1440x900", "vga1920x1080", "vga640x480", "vga800x600", "vga_hdmi",
+    "TTL1",        "TTL2",        "Pindect100M",  "STGND",       "StPVGI",      "uart_vga",     "vga_11",     "vga_21",
+    "vga1024x768", "vga1152x864", "vga1280x1024", "vga1280x800", "vga1440x900", "vga1920x1080", "vga640x480", "vga800x600",
+    "vga_hdmi",
 };
 
 const t76_utility_algorithms = [_][]const u8{

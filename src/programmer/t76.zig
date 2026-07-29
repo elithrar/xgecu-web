@@ -70,6 +70,10 @@ pub fn resetFpga(trans: transport.Transport) Error!void {
 pub fn beginTransaction(trans: transport.Transport, device: Device, bitstream: []const u8) Error!void {
     try uploadBitstream(trans, bitstream);
     errdefer resetFpga(trans) catch {};
+    try beginLoadedTransaction(trans, device);
+}
+
+pub fn beginLoadedTransaction(trans: transport.Transport, device: Device) Error!void {
     var msg: [packet.begin_len]u8 = undefined;
     writeBeginPacket(&msg, device);
     errdefer endTransaction(trans) catch {};
@@ -246,6 +250,14 @@ test "T76 begin descriptor includes algorithm number and ROM attributes" {
     try std.testing.expectEqual(@as(u8, 0x33), msg[63]);
     try std.testing.expectEqual(@as(u64, 0x10000), endian.loadInt(msg[16..20], .little));
     try std.testing.expectEqual(@as(u64, 0x400), endian.loadInt(msg[44..46], .little));
+
+    var status = [_]u8{0} ** packet.status_len;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &status);
+    defer fake.deinit();
+    try beginLoadedTransaction(fake.transport(), device);
+    try std.testing.expectEqual(@as(usize, packet.begin_len + packet.short_command_len), fake.sent.items.len);
+    try std.testing.expectEqual(command.begin_transaction, fake.sent.items[0]);
+    try std.testing.expectEqual(command.request_status, fake.sent.items[packet.begin_len]);
 }
 
 test "T76 code write uses init command and framed payload" {
@@ -302,4 +314,16 @@ test "T76 code read advertises the requested operation block count" {
 
     try std.testing.expectEqual(@as(usize, 16), fake.sent.items.len);
     try std.testing.expectEqual(@as(u64, 2), endian.loadInt(fake.sent.items[8..12], .little));
+}
+
+test "T76 protection commands do not poll status" {
+    var fake = transport.FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+
+    try protectOff(fake.transport());
+    try protectOn(fake.transport());
+
+    try std.testing.expectEqual(@as(usize, packet.short_command_len * 2), fake.sent.items.len);
+    try std.testing.expectEqual(command.protect_off, fake.sent.items[0]);
+    try std.testing.expectEqual(command.protect_on, fake.sent.items[packet.short_command_len]);
 }

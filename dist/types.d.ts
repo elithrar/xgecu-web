@@ -77,6 +77,10 @@ export interface WriteROMOptions {
     verify?: boolean;
     skipIdCheck?: boolean;
     continueOnIdMismatch?: boolean;
+    /**
+     * Requests generic pre-write unprotection. T76 targets whose catalog flags
+     * require unprotection are always unprotected before erase and restarted.
+     */
     unprotectBefore?: boolean;
     protectAfter?: boolean;
     signal?: AbortSignal;

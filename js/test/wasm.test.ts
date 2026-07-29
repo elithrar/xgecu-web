@@ -4,6 +4,47 @@ import { WasmBridge } from "../src/wasm";
 import type { UsbTransfer, WasmExports } from "../src/wasm";
 
 describe("WasmBridge", () => {
+  it("maps parsed system info to a concrete programmer kind", () => {
+    const fake = fakeExports();
+    fake.mp_programmer_from_system_info = vi.fn(() => 2);
+    const bridge = new WasmBridge(fake);
+
+    expect(bridge.programmerFromSystemInfo(new Uint8Array(63))).toBe("t56");
+    expect(fake.mp_programmer_from_system_info).toHaveBeenCalledOnce();
+  });
+
+  it("rejects unsupported parsed system info", () => {
+    const fake = fakeExports();
+    fake.error = "unsupported programmer system info";
+    fake.mp_programmer_from_system_info = vi.fn(() => 0);
+
+    expect(() => new WasmBridge(fake).programmerFromSystemInfo(new Uint8Array(63))).toThrow("unsupported programmer system info");
+  });
+
+  it("identifies a programmer through the system-info transfer", async () => {
+    const fake = fakeExports();
+    fake.mp_programmer_from_system_info = vi.fn(() => 1);
+    const bridge = new WasmBridge(fake);
+    const transfers: UsbTransfer[] = [];
+
+    const programmer = await bridge.identifyProgrammer(async (transfer) => {
+      transfers.push(transfer);
+      if (transfer.direction === "in") return new Uint8Array(63);
+    });
+
+    expect(programmer).toBe("t48");
+    expect(transfers).toEqual([
+      { direction: "out", endpoint: 1, data: new Uint8Array(5) },
+      { direction: "in", endpoint: 1, length: 80 }
+    ]);
+  });
+
+  it("rejects an empty programmer system-info response", async () => {
+    const bridge = new WasmBridge(fakeExports());
+
+    await expect(bridge.identifyProgrammer(async () => undefined)).rejects.toMatchObject({ code: "UnsupportedProgrammer" });
+  });
+
   it("surfaces start-operation errors from Wasm", () => {
     const fake = fakeExports();
     fake.error = "device not found";
@@ -228,6 +269,7 @@ function fakeExports(): MutableWasmExports {
     mp_last_error_len: vi.fn(() => encoder.encode(fake.error).byteLength),
     mp_device_list: vi.fn(() => 0),
     mp_device_detail: vi.fn(() => 0),
+    mp_programmer_from_system_info: vi.fn(() => 1),
     mp_start_pin_check: vi.fn(() => 3),
     mp_start_read_rom: vi.fn(() => 1),
     mp_start_write_rom: vi.fn(() => 2),

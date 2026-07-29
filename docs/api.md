@@ -289,7 +289,7 @@ await api.writeROM({
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 `eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
 Hardware-affecting options are runtime-validated. Unknown enum values, non-boolean flags, and fuse/PLD values outside the integer range 0-255 throw `InvalidInput` before USB work begins.
-`DeviceSummary.supportsUnprotect` and `DeviceSummary.supportsProtect` report capabilities, not required policy. Unsupported requests throw `ProtectionUnsupported`. Keep both write options explicit because changing protection is hardware-affecting; do not infer prior state or automatically re-protect a chip after writing.
+`DeviceSummary.supportsUnprotect` and `DeviceSummary.supportsProtect` report catalogued capabilities. Unsupported requests throw `ProtectionUnsupported`. Keep `protectAfter` explicit because the library does not infer prior protection state or automatically re-protect a chip after writing. T76 is the exception for pre-write unprotection: targets carrying the sourced `off_protect_before` flag are always unprotected before erase and restarted in a fresh transaction because the T76 firmware can otherwise accept the write flow without programming the target.
 Only one programmer operation may be active per physical programmer; overlapping calls and connection closes throw `OperationInProgress`.
 
 For a complete backup-then-write browser flow, including image length checks, see `docs/examples.md`.

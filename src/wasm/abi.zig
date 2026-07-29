@@ -50,19 +50,20 @@ const State = enum {
     send_chip_id,
     recv_chip_id,
     send_end_after_chip_id,
-    send_post_id_t56_bitstream_header,
-    send_post_id_t56_bitstream_payload,
     send_post_id_begin,
     send_post_id_status,
     recv_post_id_status,
     send_erase,
     recv_erase,
     send_end_after_erase,
-    send_second_t56_bitstream_header,
-    send_second_t56_bitstream_payload,
     send_second_begin,
     send_second_status,
     recv_second_status,
+    send_t76_protect_off,
+    send_end_after_t76_protect_off,
+    send_post_t76_protect_begin,
+    send_post_t76_protect_status,
+    recv_post_t76_protect_status,
     send_protect_off,
     send_protect_off_status,
     recv_protect_off_status,
@@ -71,8 +72,6 @@ const State = enum {
     blank_send_read_status,
     blank_recv_read_status,
     send_end_after_blank,
-    send_post_blank_t56_bitstream_header,
-    send_post_blank_t56_bitstream_payload,
     send_post_blank_begin,
     send_post_blank_status,
     recv_post_blank_status,
@@ -81,8 +80,6 @@ const State = enum {
     send_write_status,
     recv_write_status,
     send_end_before_verify,
-    send_verify_t56_bitstream_header,
-    send_verify_t56_bitstream_payload,
     send_verify_begin,
     send_verify_begin_status,
     recv_verify_begin_status,
@@ -137,6 +134,7 @@ const Operation = struct {
     after_t76_upload: State = .send_begin,
     t76_frame: [packet.t76_bitstream_packet_len]u8 = [_]u8{0} ** packet.t76_bitstream_packet_len,
     t76_fpga_dirty: bool = false,
+    t76_unprotected: bool = false,
     offset: usize = 0,
     command: [packet.begin_len]u8 = [_]u8{0} ** packet.begin_len,
     transfer: Transfer = .{},
@@ -252,6 +250,23 @@ export fn mp_device_detail(name_ptr: u32, name_len: u32, programmer_value: u32) 
     defer out.deinit();
     writeDeviceSummaryJson(&out.writer, summary) catch return setError("out of memory");
     return setResult(out.toOwnedSlice() catch return setError("out of memory"));
+}
+
+export fn mp_programmer_from_system_info(data_ptr: u32, data_len: u32) u32 {
+    clearLastError();
+    const info = session.parseSystemInfo(sliceConst(data_ptr, data_len)) orelse {
+        _ = setError("unsupported programmer system info");
+        return 0;
+    };
+    return switch (info.programmer) {
+        .t48 => 1,
+        .t56 => 2,
+        .t76 => 3,
+        else => {
+            _ = setError("unsupported programmer system info");
+            return 0;
+        },
+    };
 }
 
 export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, skip_id_check: u32, continue_on_id_mismatch: u32, t56_algorithm_ptr: u32, t56_algorithm_len: u32, t76_algorithm_ptr: u32, t76_algorithm_len: u32) u32 {
@@ -504,7 +519,7 @@ fn nextTransfer(op: *Operation) !Transfer {
             t48.writeResetPinDriversPacket(pin_command);
             return outTransfer(op, endpoints.command, pin_command);
         },
-        .send_t56_bitstream_header, .send_post_id_t56_bitstream_header, .send_second_t56_bitstream_header, .send_post_blank_t56_bitstream_header, .send_verify_t56_bitstream_header => {
+        .send_t56_bitstream_header => {
             @memset(op.command[0..packet.bitstream_header_len], 0);
             op.command[0] = command.write_bitstream;
             const bitstream = op.t56_algorithm;
@@ -512,7 +527,7 @@ fn nextTransfer(op: *Operation) !Transfer {
             endian.storeInt(op.command[4..8], bitstream.len, .little);
             return outTransfer(op, endpoints.command, op.command[0..packet.bitstream_header_len]);
         },
-        .send_t56_bitstream_payload, .send_post_id_t56_bitstream_payload, .send_second_t56_bitstream_payload, .send_post_blank_t56_bitstream_payload, .send_verify_t56_bitstream_payload => {
+        .send_t56_bitstream_payload => {
             const bitstream = op.t56_algorithm;
             if (bitstream.len == 0) return error.AlgorithmUnavailable;
             return outTransfer(op, endpoints.command, bitstream);
@@ -552,17 +567,17 @@ fn nextTransfer(op: *Operation) !Transfer {
             endian.storeInt(op.command[4..8], 0xaa55ddee, .little);
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .send_begin, .send_post_id_begin, .send_second_begin, .send_post_blank_begin, .send_verify_begin => {
+        .send_begin, .send_post_id_begin, .send_second_begin, .send_post_t76_protect_begin, .send_post_blank_begin, .send_verify_begin => {
             writeBeginPacket(op);
             op.transaction_open = true;
             return outTransfer(op, endpoints.command, op.command[0..packet.begin_len]);
         },
-        .send_begin_status, .send_post_id_status, .send_second_status, .send_post_blank_status, .send_verify_begin_status, .send_protect_off_status, .blank_send_read_status, .send_write_status, .send_protect_on_status, .send_read_status, .verify_send_read_status => {
+        .send_begin_status, .send_post_id_status, .send_second_status, .send_post_t76_protect_status, .send_post_blank_status, .send_verify_begin_status, .send_protect_off_status, .blank_send_read_status, .send_write_status, .send_protect_on_status, .send_read_status, .verify_send_read_status => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.request_status;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .recv_begin_status, .recv_post_id_status, .recv_second_status, .recv_post_blank_status, .recv_verify_begin_status, .recv_protect_off_status, .blank_recv_read_status, .recv_write_status, .recv_protect_on_status, .recv_read_status, .verify_recv_read_status => return inTransfer(endpoints.command, packet.status_len),
+        .recv_begin_status, .recv_post_id_status, .recv_second_status, .recv_post_t76_protect_status, .recv_post_blank_status, .recv_verify_begin_status, .recv_protect_off_status, .blank_recv_read_status, .recv_write_status, .recv_protect_on_status, .recv_read_status, .verify_recv_read_status => return inTransfer(endpoints.command, packet.status_len),
         .send_chip_id => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.read_id;
@@ -578,12 +593,12 @@ fn nextTransfer(op: *Operation) !Transfer {
             return outTransfer(op, endpoints.command, op.command[0..erase_len]);
         },
         .recv_erase => return inTransfer(endpoints.command, packet.erase_response_len),
-        .send_protect_off, .send_protect_on => {
+        .send_t76_protect_off, .send_protect_off, .send_protect_on => {
             @memset(op.command[0..packet.short_command_len], 0);
-            op.command[0] = if (op.state == .send_protect_off) command.protect_off else command.protect_on;
+            op.command[0] = if (op.state == .send_protect_on) command.protect_on else command.protect_off;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
-        .send_end_after_chip_id, .send_end_after_erase, .send_end_after_blank, .send_end_before_verify, .send_final_end, .send_abort_end => {
+        .send_end_after_chip_id, .send_end_after_erase, .send_end_after_t76_protect_off, .send_end_after_blank, .send_end_before_verify, .send_final_end, .send_abort_end => {
             @memset(op.command[0..packet.short_command_len], 0);
             op.command[0] = command.end_transaction;
             return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
@@ -757,14 +772,8 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_end_after_chip_id => {
             op.transaction_open = false;
-            op.state = switch (op.programmer) {
-                .t56 => .send_post_id_t56_bitstream_header,
-                .t76 => startT76Upload(op, .send_post_id_begin),
-                else => .send_post_id_begin,
-            };
+            op.state = .send_post_id_begin;
         },
-        .send_post_id_t56_bitstream_header => op.state = .send_post_id_t56_bitstream_payload,
-        .send_post_id_t56_bitstream_payload => op.state = .send_post_id_begin,
         .send_post_id_begin => {
             op.transaction_open = true;
             op.state = .send_post_id_status;
@@ -781,14 +790,8 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_end_after_erase => {
             op.transaction_open = false;
-            op.state = switch (op.programmer) {
-                .t56 => .send_second_t56_bitstream_header,
-                .t76 => startT76Upload(op, .send_second_begin),
-                else => .send_second_begin,
-            };
+            op.state = .send_second_begin;
         },
-        .send_second_t56_bitstream_header => op.state = .send_second_t56_bitstream_payload,
-        .send_second_t56_bitstream_payload => op.state = .send_second_begin,
         .send_second_begin => {
             op.transaction_open = true;
             op.state = .send_second_status;
@@ -798,6 +801,23 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             try checkStatus(op, data);
             op.offset = 0;
             op.state = .blank_send_read_cmd;
+        },
+        .send_t76_protect_off => {
+            op.t76_unprotected = true;
+            op.state = .send_end_after_t76_protect_off;
+        },
+        .send_end_after_t76_protect_off => {
+            op.transaction_open = false;
+            op.state = .send_post_t76_protect_begin;
+        },
+        .send_post_t76_protect_begin => {
+            op.transaction_open = true;
+            op.state = .send_post_t76_protect_status;
+        },
+        .send_post_t76_protect_status => op.state = .recv_post_t76_protect_status,
+        .recv_post_t76_protect_status => {
+            try checkStatus(op, data);
+            op.state = afterChipIdState(op);
         },
         .send_protect_off => op.state = .send_protect_off_status,
         .send_protect_off_status => op.state = .recv_protect_off_status,
@@ -831,14 +851,8 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_end_after_blank => {
             op.transaction_open = false;
-            op.state = switch (op.programmer) {
-                .t56 => .send_post_blank_t56_bitstream_header,
-                .t76 => startT76Upload(op, .send_post_blank_begin),
-                else => .send_post_blank_begin,
-            };
+            op.state = .send_post_blank_begin;
         },
-        .send_post_blank_t56_bitstream_header => op.state = .send_post_blank_t56_bitstream_payload,
-        .send_post_blank_t56_bitstream_payload => op.state = .send_post_blank_begin,
         .send_post_blank_begin => {
             op.transaction_open = true;
             op.state = .send_post_blank_status;
@@ -847,7 +861,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         .recv_post_blank_status => {
             try checkStatus(op, data);
             op.offset = 0;
-            op.state = if (op.unprotect_before) .send_protect_off else .send_write_cmd;
+            op.state = if (op.unprotect_before and op.programmer != .t76) .send_protect_off else .send_write_cmd;
         },
         .send_write_cmd => op.state = .send_write_payload,
         .send_write_payload => {
@@ -885,14 +899,8 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_end_before_verify => {
             op.transaction_open = false;
-            op.state = switch (op.programmer) {
-                .t56 => .send_verify_t56_bitstream_header,
-                .t76 => startT76Upload(op, .send_verify_begin),
-                else => .send_verify_begin,
-            };
+            op.state = .send_verify_begin;
         },
-        .send_verify_t56_bitstream_header => op.state = .send_verify_t56_bitstream_payload,
-        .send_verify_t56_bitstream_payload => op.state = .send_verify_begin,
         .send_verify_begin => {
             op.transaction_open = true;
             op.state = .send_verify_begin_status;
@@ -903,7 +911,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             op.offset = 0;
             op.state = .verify_send_read_cmd;
         },
-        .send_protect_on => op.state = .send_protect_on_status,
+        .send_protect_on => op.state = if (op.programmer == .t76) .send_final_end else .send_protect_on_status,
         .send_protect_on_status => op.state = .recv_protect_on_status,
         .recv_protect_on_status => {
             try checkStatus(op, data);
@@ -1088,9 +1096,24 @@ fn shouldCheckChipId(op: *Operation) bool {
 fn afterChipIdState(op: *Operation) State {
     return switch (op.kind) {
         .read => .send_read_cmd,
-        .write => if (op.erase) .send_erase else if (!op.device.can_erase) .blank_send_read_cmd else if (op.unprotect_before) .send_protect_off else .send_write_cmd,
+        .write => if (needsT76EarlyUnprotect(op))
+            .send_t76_protect_off
+        else if (op.erase)
+            .send_erase
+        else if (!op.device.can_erase)
+            .blank_send_read_cmd
+        else if (op.unprotect_before and op.programmer != .t76)
+            .send_protect_off
+        else
+            .send_write_cmd,
         .pin_check => .send_pin_reset,
     };
+}
+
+fn needsT76EarlyUnprotect(op: *Operation) bool {
+    if (op.programmer != .t76 or op.t76_unprotected) return false;
+    const flags = model.decodeFlags(op.device.flags_raw, op.device.voltages_raw, op.device.chip_info, op.device.protocol_id);
+    return flags.off_protect_before;
 }
 
 fn afterBlankReadStatus(op: *Operation) State {
@@ -1099,7 +1122,7 @@ fn afterBlankReadStatus(op: *Operation) State {
 
 fn isBlankCheckState(state: State) bool {
     return switch (state) {
-        .blank_send_read_cmd, .blank_recv_read_payload, .blank_send_read_status, .blank_recv_read_status, .send_end_after_blank, .send_post_blank_t56_bitstream_header, .send_post_blank_t56_bitstream_payload, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => true,
+        .blank_send_read_cmd, .blank_recv_read_payload, .blank_send_read_status, .blank_recv_read_status, .send_end_after_blank, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => true,
         else => false,
     };
 }
@@ -1418,13 +1441,13 @@ fn errorCode(err: anyerror) u32 {
 
 fn phaseCode(state: State) u32 {
     return switch (state) {
-        .send_info, .recv_info, .send_t56_bitstream_header, .send_t56_bitstream_payload, .send_t76_bitstream_begin, .recv_t76_bitstream_begin, .send_t76_bitstream_block, .send_t76_bitstream_end, .recv_t76_bitstream_end, .send_begin, .send_begin_status, .recv_begin_status, .send_post_id_t56_bitstream_header, .send_post_id_t56_bitstream_payload, .send_post_id_begin, .send_post_id_status, .recv_post_id_status, .send_second_t56_bitstream_header, .send_second_t56_bitstream_payload, .send_second_begin, .send_second_status, .recv_second_status, .send_post_blank_t56_bitstream_header, .send_post_blank_t56_bitstream_payload, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => 1,
+        .send_info, .recv_info, .send_t56_bitstream_header, .send_t56_bitstream_payload, .send_t76_bitstream_begin, .recv_t76_bitstream_begin, .send_t76_bitstream_block, .send_t76_bitstream_end, .recv_t76_bitstream_end, .send_begin, .send_begin_status, .recv_begin_status, .send_post_id_begin, .send_post_id_status, .recv_post_id_status, .send_second_begin, .send_second_status, .recv_second_status, .send_t76_protect_off, .send_end_after_t76_protect_off, .send_post_t76_protect_begin, .send_post_t76_protect_status, .recv_post_t76_protect_status, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => 1,
         .send_pin_reset, .send_pin_pulldowns, .send_pin_ground, .send_pin_read, .recv_pin_read => 5,
         .send_chip_id, .recv_chip_id, .send_end_after_chip_id => 2,
         .send_erase, .recv_erase, .send_end_after_erase => 3,
         .send_protect_off, .send_protect_off_status, .recv_protect_off_status, .send_write_cmd, .send_write_payload, .send_write_status, .recv_write_status, .send_protect_on, .send_protect_on_status, .recv_protect_on_status => 4,
         .blank_send_read_cmd, .blank_recv_read_payload, .blank_send_read_status, .blank_recv_read_status, .send_end_after_blank, .send_read_cmd, .recv_read_payload, .send_read_status, .recv_read_status => 5,
-        .send_end_before_verify, .send_verify_t56_bitstream_header, .send_verify_t56_bitstream_payload, .send_verify_begin, .send_verify_begin_status, .recv_verify_begin_status, .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
+        .send_end_before_verify, .send_verify_begin, .send_verify_begin_status, .recv_verify_begin_status, .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
         .send_pin_cleanup, .send_abort_pin_reset, .send_final_end, .send_abort_end, .send_t76_reset, .recv_t76_reset, .send_abort_t76_reset, .recv_abort_t76_reset => 7,
         .done => 8,
         .failed => 9,
@@ -1578,6 +1601,36 @@ test "Wasm chip ID check ends and restarts the programming transaction" {
     try completeTransfer(&op, &.{});
     try expectNextTransfer(&op, .out, endpoints.command, packet.begin_len);
     try std.testing.expectEqual(command.begin_transaction, op.command[0]);
+}
+
+test "T56 and T76 Wasm transaction restarts do not re-upload the algorithm" {
+    const restart_states = [_]State{
+        .send_end_after_chip_id,
+        .send_end_after_erase,
+        .send_end_after_blank,
+        .send_end_before_verify,
+    };
+    for ([_]model.Programmer{ .t56, .t76 }) |programmer| {
+        for (restart_states) |restart_state| {
+            var op = Operation{
+                .kind = .write,
+                .requested_programmer = programmer,
+                .programmer = programmer,
+                .device = catalog.devices[0],
+                .descriptor = catalog.devices[0].descriptor(programmer),
+                .memory = .code,
+                .state = restart_state,
+                .transaction_open = true,
+            };
+
+            try completeTransfer(&op, &.{});
+            const transfer = try nextTransfer(&op);
+            try std.testing.expectEqual(TransferKind.out, transfer.kind);
+            try std.testing.expectEqual(endpoints.command, transfer.endpoint);
+            try std.testing.expectEqual(@as(u32, packet.begin_len), transfer.len);
+            try std.testing.expectEqual(command.begin_transaction, op.command[0]);
+        }
+    }
 }
 
 test "Wasm non-erasable writes reject a nonblank target" {
@@ -1957,6 +2010,66 @@ test "Wasm protection runs after verification and checks status" {
     try expectNextTransfer(&op, .in, endpoints.command, packet.status_len);
     status[0] = 1;
     try std.testing.expectError(error.ProgrammerStatusError, completeTransfer(&op, &status));
+}
+
+test "T76 Wasm unprotects before erase and restarts without protection status polling" {
+    var data = [_]u8{0xff};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t76,
+        .programmer = .t76,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t76),
+        .memory = .code,
+        .state = .recv_begin_status,
+        .data = &data,
+        .erase = true,
+        .skip_id_check = true,
+        .transaction_open = true,
+    };
+    var status = [_]u8{0} ** packet.status_len;
+
+    try completeTransfer(&op, &status);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.protect_off, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try std.testing.expect(op.t76_unprotected);
+
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.end_transaction, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.begin_len);
+    try std.testing.expectEqual(command.begin_transaction, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.request_status, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .in, endpoints.command, packet.status_len);
+    try completeTransfer(&op, &status);
+
+    try std.testing.expectEqual(State.send_erase, op.state);
+    op.erase = false;
+    op.unprotect_before = true;
+    try std.testing.expectEqual(State.send_write_cmd, afterChipIdState(&op));
+}
+
+test "T76 Wasm protect-on proceeds directly to transaction cleanup" {
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t76,
+        .programmer = .t76,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t76),
+        .memory = .code,
+        .state = .send_protect_on,
+        .transaction_open = true,
+    };
+
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.protect_on, op.command[0]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(command.end_transaction, op.command[0]);
 }
 
 test "T56 Wasm reads are capped to native protocol payload window" {

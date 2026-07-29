@@ -33,7 +33,10 @@ pub fn uploadBitstream(trans: transport.Transport, bitstream: []const u8) Error!
 
 pub fn beginTransaction(trans: transport.Transport, device: Device, bitstream: []const u8) Error!void {
     try uploadBitstream(trans, bitstream);
+    try beginLoadedTransaction(trans, device);
+}
 
+pub fn beginLoadedTransaction(trans: transport.Transport, device: Device) Error!void {
     var msg: [packet.begin_len]u8 = undefined;
     t48.writeBeginPacket(&msg, .t56, device);
 
@@ -283,6 +286,12 @@ test "begin T56 transaction uploads bitstream before begin packet" {
     try std.testing.expectEqualSlices(u8, &.{ 0x56, 0x34, 0x12, 0x00 }, begin[16..20]);
     try std.testing.expectEqualSlices(u8, &.{ 0xdd, 0xcc, 0xbb, 0xaa }, begin[40..44]);
     try std.testing.expectEqual(@as(u8, command.request_status), fake.sent.items[74]);
+
+    fake.sent.clearRetainingCapacity();
+    try beginLoadedTransaction(fake.transport(), device);
+    try std.testing.expectEqual(@as(usize, packet.begin_len + packet.short_command_len), fake.sent.items.len);
+    try std.testing.expectEqual(command.begin_transaction, fake.sent.items[0]);
+    try std.testing.expectEqual(command.request_status, fake.sent.items[packet.begin_len]);
 }
 
 test "failed T56 begin status ends the opened transaction" {

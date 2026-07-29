@@ -11,6 +11,7 @@ import type {
   PinCheckResult,
   ProgrammerConnection,
   ProgrammerInfo,
+  ProgrammerKind,
   ReadROMOptions,
   USBDeviceLike,
   USBNavigatorLike,
@@ -29,6 +30,7 @@ const deviceStates = new WeakMap<USBDeviceLike, DeviceState>();
 
 interface DeviceState {
   claimed: boolean;
+  detectedProgrammer?: Exclude<ProgrammerKind, "auto">;
   lifecycleActive: boolean;
   openedByLibrary: boolean;
   operations: number;
@@ -103,6 +105,7 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
       this.state.references = 0;
       this.state.poisoned = false;
       this.state.sessionEstablished = false;
+      this.state.detectedProgrammer = undefined;
       this.closed = true;
     } finally {
       this.state.lifecycleActive = false;
@@ -178,8 +181,14 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       if (!device) throw new XgecuWebUSBError("Device not found or unsupported by requested programmer.", "DeviceNotFound");
       const size = memorySize(device, operation.memory);
       if (size === 0) throw new XgecuWebUSBError("Selected memory region is empty.", "EmptyMemoryRegion");
-      const algorithms = await loadAlgorithms(this.algorithmProvider, device, operation.programmerKind, usbDevice.productId);
       await ensureReady(usbDevice);
+      const algorithmProgrammer = await programmerForAlgorithms(
+        this.wasm,
+        usbDevice,
+        operation.programmerKind,
+        this.algorithmProvider
+      );
+      const algorithms = await loadAlgorithms(this.algorithmProvider, device, algorithmProgrammer);
       const handle = this.wasm.startReadROM({
         programmer: operation.programmerKind,
         device: operation.device,
@@ -274,8 +283,14 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       if (operation.protectAfter && !device.supportsProtect) {
         throw new XgecuWebUSBError("The selected device does not support enabling protection after programming.", "ProtectionUnsupported");
       }
-      const algorithms = await loadAlgorithms(this.algorithmProvider, device, operation.programmerKind, usbDevice.productId);
       await ensureReady(usbDevice);
+      const algorithmProgrammer = await programmerForAlgorithms(
+        this.wasm,
+        usbDevice,
+        operation.programmerKind,
+        this.algorithmProvider
+      );
+      const algorithms = await loadAlgorithms(this.algorithmProvider, device, algorithmProgrammer);
       const handle = this.wasm.startWriteROM({
         programmer: operation.programmerKind,
         device: operation.device,
@@ -366,9 +381,11 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
       }
       state.openedByLibrary = false;
       state.sessionEstablished = false;
+      state.detectedProgrammer = undefined;
     }
     if (!device.opened) {
       state.claimed = false;
+      state.detectedProgrammer = undefined;
       await lifecycle("open USB device", () => device.open());
       state.openedByLibrary = true;
       openedHere = true;
@@ -512,39 +529,49 @@ function memorySize(device: DeviceDetail, memory: NonNullable<WriteROMOptions["m
 async function loadAlgorithms(
   provider: AlgorithmProvider | undefined,
   device: DeviceDetail,
-  requestedProgrammer: NonNullable<ReadROMOptions["programmerKind"]>,
-  productId: number
+  requiredProgrammer: AlgorithmRequirement["programmer"] | undefined
 ): Promise<{ t56Algorithm?: Uint8Array; t76Algorithm?: Uint8Array }> {
-  const requiredProgrammers: AlgorithmRequirement["programmer"][] =
-    requestedProgrammer === "t56" || requestedProgrammer === "t76"
-      ? [requestedProgrammer]
-      : requestedProgrammer === "auto" && productId === T76_PRODUCT_ID
-        ? ["t76"]
-        : requestedProgrammer === "auto" && provider
-          ? ["t56"]
-          : [];
-  if (requiredProgrammers.length === 0) return {};
+  if (!requiredProgrammer) return {};
   if (!provider) {
     throw new XgecuWebUSBError(
-      `A local algorithm provider is required for ${requiredProgrammers[0].toUpperCase()} operations.`,
+      `A local algorithm provider is required for ${requiredProgrammer.toUpperCase()} operations.`,
       "AlgorithmUnavailable"
     );
   }
 
   const payloads: { t56Algorithm?: Uint8Array; t76Algorithm?: Uint8Array } = {};
-  for (const programmer of requiredProgrammers) {
-    const requirement = device.algorithms.find((entry) => entry.programmer === programmer);
-    if (!requirement) {
-      throw new XgecuWebUSBError(`The catalog does not define a ${programmer.toUpperCase()} algorithm for this device.`, "AlgorithmUnavailable");
-    }
-    const bytes = await provider(requirement);
-    if (!(bytes instanceof Uint8Array)) {
-      throw new XgecuWebUSBError("The algorithm provider must return a Uint8Array.", "InvalidAlgorithm");
-    }
-    if (programmer === "t56") payloads.t56Algorithm = bytes.slice();
-    else payloads.t76Algorithm = bytes.slice();
+  const requirement = device.algorithms.find((entry) => entry.programmer === requiredProgrammer);
+  if (!requirement) {
+    throw new XgecuWebUSBError(`The catalog does not define a ${requiredProgrammer.toUpperCase()} algorithm for this device.`, "AlgorithmUnavailable");
   }
+  const bytes = await provider(requirement);
+  if (!(bytes instanceof Uint8Array)) {
+    throw new XgecuWebUSBError("The algorithm provider must return a Uint8Array.", "InvalidAlgorithm");
+  }
+  if (requiredProgrammer === "t56") payloads.t56Algorithm = bytes.slice();
+  else payloads.t76Algorithm = bytes.slice();
   return payloads;
+}
+
+async function programmerForAlgorithms(
+  wasm: WasmBridge,
+  device: USBDeviceLike,
+  requestedProgrammer: NonNullable<ReadROMOptions["programmerKind"]>,
+  provider: AlgorithmProvider | undefined
+): Promise<AlgorithmRequirement["programmer"] | undefined> {
+  if (requestedProgrammer === "t56" || requestedProgrammer === "t76") return requestedProgrammer;
+  if (requestedProgrammer === "t48") return undefined;
+  if (device.productId === T76_PRODUCT_ID) return "t76";
+  if (!provider) return undefined;
+
+  const state = stateFor(device);
+  const detected = state.detectedProgrammer ??
+    await wasm.identifyProgrammer((transfer) => performWebUSBTransfer(device, transfer));
+  if (detected !== "t48" && detected !== "t56") {
+    throw new XgecuWebUSBError("The shared T48/T56 USB identity returned an unexpected programmer model.", "ProgrammerMismatch");
+  }
+  state.detectedProgrammer = detected;
+  return detected === "t56" ? "t56" : undefined;
 }
 
 async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Promise<T>): Promise<T> {
@@ -564,7 +591,9 @@ async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Pro
 }
 
 function markProgrammerPoisoned(device: USBDeviceLike): void {
-  stateFor(device).poisoned = true;
+  const state = stateFor(device);
+  state.poisoned = true;
+  state.detectedProgrammer = undefined;
 }
 
 async function quarantineProgrammer(device: USBDeviceLike, state: DeviceState): Promise<void> {
@@ -573,6 +602,7 @@ async function quarantineProgrammer(device: USBDeviceLike, state: DeviceState): 
   state.claimed = false;
   if (!device.opened) state.openedByLibrary = false;
   state.sessionEstablished = false;
+  state.detectedProgrammer = undefined;
 }
 
 function validateConnection(programmer: ProgrammerConnection): void {

@@ -119,8 +119,6 @@ pub fn readROM(
     const ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
     t76_fpga_dirty = info.programmer == .t76;
     defer ctx.deinit(allocator);
-    var read_ctx: ?protocol.BeginContext = null;
-    defer if (read_ctx) |restart| restart.deinit(allocator);
     var protocol_open = true;
     errdefer if (protocol_open) protocol.end(info.programmer, trans) catch {};
 
@@ -135,7 +133,7 @@ pub fn readROM(
     if (check_id) {
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        read_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
+        try protocol.beginLoaded(info.programmer, trans, descriptor);
         protocol_open = true;
     }
 
@@ -201,25 +199,28 @@ pub fn writeROM(
     const check_id = shouldCheckChipId(device, chip_id_policy);
     try checkChipId(info.programmer, trans, device, chip_id_policy);
 
-    var post_id_ctx: ?protocol.BeginContext = null;
-    defer if (post_id_ctx) |ctx| ctx.deinit(allocator);
-    var second_ctx: ?protocol.BeginContext = null;
-    defer if (second_ctx) |ctx| ctx.deinit(allocator);
-    var post_blank_ctx: ?protocol.BeginContext = null;
-    defer if (post_blank_ctx) |ctx| ctx.deinit(allocator);
-    var verify_ctx: ?protocol.BeginContext = null;
-    defer if (verify_ctx) |ctx| ctx.deinit(allocator);
     if (check_id) {
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        post_id_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
+        try protocol.beginLoaded(info.programmer, trans, descriptor);
+        protocol_open = true;
+    }
+    // T76 firmware requires protected parallel targets to be unprotected before
+    // erase, then started in a fresh transaction. The vendor software does this
+    // regardless of the generic unprotect option.
+    const t76_unprotected_early = info.programmer == .t76 and flags.off_protect_before;
+    if (t76_unprotected_early) {
+        try protectOff(info.programmer, trans);
+        try protocol.end(info.programmer, trans);
+        protocol_open = false;
+        try protocol.beginLoaded(info.programmer, trans, descriptor);
         protocol_open = true;
     }
     if (options.erase) {
         try protocol.erase(info.programmer, trans, options.erase_num_fuses, options.erase_pld);
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        second_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
+        try protocol.beginLoaded(info.programmer, trans, descriptor);
         protocol_open = true;
     }
 
@@ -227,11 +228,11 @@ pub fn writeROM(
         try ensureBlank(info.programmer, trans, device, descriptor, options.memory, size, blank_buffer.?);
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        post_blank_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
+        try protocol.beginLoaded(info.programmer, trans, descriptor);
         protocol_open = true;
     }
 
-    if (options.unprotect_before) {
+    if (options.unprotect_before and !t76_unprotected_early) {
         try protectOff(info.programmer, trans);
         try checkProgrammerStatus(info.programmer, trans);
     }
@@ -252,7 +253,7 @@ pub fn writeROM(
     if (options.verify) {
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        verify_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
+        try protocol.beginLoaded(info.programmer, trans, descriptor);
         protocol_open = true;
         var actual = try allocator.alloc(u8, data.len);
         defer allocator.free(actual);
@@ -268,7 +269,7 @@ pub fn writeROM(
     }
     if (options.protect_after) {
         try protectOn(info.programmer, trans);
-        try checkProgrammerStatus(info.programmer, trans);
+        if (info.programmer != .t76) try checkProgrammerStatus(info.programmer, trans);
     }
     try protocol.end(info.programmer, trans);
     protocol_open = false;

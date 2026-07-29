@@ -344,6 +344,54 @@ describe("BrowserXgecuWebUSB", () => {
     }));
   });
 
+  it("does not request a T56 algorithm when auto detects a T48", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    const identifyProgrammer = vi.spyOn(wasm, "identifyProgrammer").mockResolvedValue("t48");
+    const startReadROM = vi.spyOn(wasm, "startReadROM");
+    const provider = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device), provider);
+    const programmer = await api.requestProgrammer();
+
+    await api.readROM({ programmer, device: "AT28C64B" });
+
+    expect(identifyProgrammer).toHaveBeenCalledOnce();
+    expect(provider).not.toHaveBeenCalled();
+    expect(startReadROM).toHaveBeenCalledWith(expect.not.objectContaining({
+      t56Algorithm: expect.any(Uint8Array)
+    }));
+  });
+
+  it("loads a T56 algorithm only after auto detects a T56", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    const requirement = {
+      programmer: "t56",
+      name: "ROM28P41",
+      size: 3,
+      sha256: "11".repeat(32)
+    } as const;
+    vi.spyOn(wasm, "resolveDevice").mockReturnValue({
+      ...fakeDeviceSummary(),
+      supportsT56: true,
+      algorithms: [requirement]
+    });
+    const identifyProgrammer = vi.spyOn(wasm, "identifyProgrammer").mockResolvedValue("t56");
+    const startReadROM = vi.spyOn(wasm, "startReadROM");
+    const provider = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device), provider);
+    const programmer = await api.requestProgrammer();
+
+    await api.readROM({ programmer, device: "AT28C64B" });
+
+    expect(identifyProgrammer).toHaveBeenCalledOnce();
+    expect(provider).toHaveBeenCalledWith(requirement);
+    expect(startReadROM).toHaveBeenCalledWith(expect.objectContaining({
+      programmer: "auto",
+      t56Algorithm: new Uint8Array([1, 2, 3])
+    }));
+  });
+
   it("requires an explicit reconnect after a disconnect", async () => {
     const device = new FakeDevice();
     const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
@@ -658,6 +706,7 @@ function fakeWasm(): WasmBridge {
   return {
     deviceList: () => [fakeDeviceSummary()],
     resolveDevice: () => fakeDeviceSummary(),
+    identifyProgrammer: async () => "t48",
     startPinCheck: () => 3,
     startReadROM: () => 1,
     startWriteROM: () => 2,

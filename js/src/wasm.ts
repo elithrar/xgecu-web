@@ -11,6 +11,7 @@ export interface WasmExports {
   mp_last_error_len(): number;
   mp_device_list(queryPtr: number, queryLen: number, programmer: number, limit: number): number;
   mp_device_detail(devicePtr: number, deviceLen: number, programmer: number): number;
+  mp_programmer_from_system_info(dataPtr: number, dataLen: number): number;
   mp_start_pin_check(programmer: number, devicePtr: number, deviceLen: number): number;
   mp_start_read_rom(
     programmer: number,
@@ -79,6 +80,9 @@ export type WasmOperationHandle = number & { readonly [wasmOperationHandleBrand]
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const COMMAND_ENDPOINT = 1;
+const SYSTEM_INFO_REQUEST_LEN = 5;
+const SYSTEM_INFO_RESPONSE_LEN = 80;
 
 export class WasmBridge {
   private readonly operations = new Map<WasmOperationHandle, "ready" | "running">();
@@ -109,6 +113,42 @@ export class WasmBridge {
       this.throwIfError(rc);
       return JSON.parse(textDecoder.decode(this.resultBytes())) as DeviceDetail | null;
     });
+  }
+
+  programmerFromSystemInfo(data: Uint8Array): Exclude<ProgrammerKind, "auto"> {
+    if (!(data instanceof Uint8Array)) {
+      throw new XgecuWebUSBError("Programmer system info must be a Uint8Array.", "InvalidInput");
+    }
+    return this.withBytes(data, (dataPtr) => {
+      const programmer = this.exports.mp_programmer_from_system_info(dataPtr, data.byteLength);
+      switch (programmer) {
+        case 1:
+          return "t48";
+        case 2:
+          return "t56";
+        case 3:
+          return "t76";
+        default:
+          throw new XgecuWebUSBError(this.lastError() || "Unsupported programmer system info.", "UnsupportedProgrammer");
+      }
+    });
+  }
+
+  async identifyProgrammer(performTransfer: UsbTransferHandler): Promise<Exclude<ProgrammerKind, "auto">> {
+    await performTransfer({
+      direction: "out",
+      endpoint: COMMAND_ENDPOINT,
+      data: new Uint8Array(SYSTEM_INFO_REQUEST_LEN)
+    });
+    const response = await performTransfer({
+      direction: "in",
+      endpoint: COMMAND_ENDPOINT,
+      length: SYSTEM_INFO_RESPONSE_LEN
+    });
+    if (!(response instanceof Uint8Array)) {
+      throw new XgecuWebUSBError("The programmer returned no system info.", "UnsupportedProgrammer");
+    }
+    return this.programmerFromSystemInfo(response);
   }
 
   startReadROM(options: {

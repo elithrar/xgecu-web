@@ -59,6 +59,19 @@ pub fn begin(
     };
 }
 
+pub fn beginLoaded(
+    programmer: model.Programmer,
+    trans: transport.Transport,
+    descriptor: t48.Device,
+) Error!void {
+    return switch (programmer) {
+        .t48 => t48.beginTransaction(trans, descriptor),
+        .t56 => t56.beginLoadedTransaction(trans, descriptor),
+        .t76 => t76.beginLoadedTransaction(trans, descriptor),
+        else => Error.UnsupportedProgrammer,
+    };
+}
+
 pub fn end(programmer: model.Programmer, trans: transport.Transport) Error!void {
     return switch (programmer) {
         .t48 => t48.endTransaction(trans),
