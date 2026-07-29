@@ -5,20 +5,20 @@
     "repository": "https://gitlab.com/DavidGriffith/minipro",
     "revision": "a8efaedc236c1d9718bd28299dfbb99536b010ff",
     "file": "infoic.xml",
-    "database": "INFOIC2PLUS",
-    "vendorVersion": "XGPro V12.90"
+    "database": "INFOIC2PLUS and INFOICT76",
+    "vendorVersion": "XGPro V12.90 and XGPro_T76 V12.91"
   },
   "devices": [
     {
       "canonicalName": "AT28C64B@DIP28",
       "aliases": ["AT28C64B", "AT28C64B@DIP28", "AT28C64B-15PU"],
-      "programmers": ["t48"],
+      "programmers": ["t48", "t56", "t76"],
       "chipType": "memory",
       "protocolId": "0x07",
       "variant": "0x4126",
       "voltagesRaw": "0x0200",
       "chipInfo": 0,
-      "pinMap": "0x13",
+      "pinMap": "0x7013",
       "pinCheck": {
         "gndPins": [14],
         "mask": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 40]
@@ -33,18 +33,60 @@
       "writeBufferSize": 128,
       "flagsRaw": "0x0000c010",
       "canErase": true,
-      "blankValue": "0xff"
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P41",
+        "size": 60416,
+        "sha256": "6ac1f426409a30c4fd88e511e28b1646eaf22f866c23694f99355c1636175215"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P41",
+        "size": 756921,
+        "sha256": "1fd3572e010ab37aae2f13f624227610b5b8e91889ba4fe55d870220273db13e"
+      }
+    },
+    {
+      "canonicalName": "AT28C256@DIP28",
+      "aliases": ["AT28C256", "AT28C256@DIP28"],
+      "programmers": ["t56", "t76"],
+      "chipType": "memory",
+      "protocolId": "0x07",
+      "variant": "0x4126",
+      "voltagesRaw": "0x0200",
+      "chipInfo": 0,
+      "pinMap": "0x0c14",
+      "dataMemorySize": 0,
+      "dataMemory2Size": 0,
+      "pageSize": 64,
+      "pulseDelay": 10000,
+      "codeMemorySize": 32768,
+      "packageDetailsRaw": "0x1c000000",
+      "readBufferSize": 512,
+      "writeBufferSize": 128,
+      "flagsRaw": "0x0000c010",
+      "canErase": true,
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P41",
+        "size": 60416,
+        "sha256": "6ac1f426409a30c4fd88e511e28b1646eaf22f866c23694f99355c1636175215"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P41",
+        "size": 756921,
+        "sha256": "1fd3572e010ab37aae2f13f624227610b5b8e91889ba4fe55d870220273db13e"
+      }
     },
     {
       "canonicalName": "M27C64A@DIP28",
       "aliases": ["M27C64A", "M27C64A@DIP28"],
-      "programmers": ["t48"],
+      "programmers": ["t48", "t56", "t76"],
       "chipType": "memory",
       "protocolId": "0x07",
       "variant": "0x3313",
       "voltagesRaw": "0x4000",
       "chipInfo": "0x0006",
-      "pinMap": "0x15",
+      "pinMap": "0x6f15",
       "pinCheck": {
         "gndPins": [14],
         "mask": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 39, 40]
@@ -61,7 +103,255 @@
       "canErase": false,
       "chipId": "0x00009b08",
       "chipIdBytesCount": 2,
-      "blankValue": "0xff"
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P33",
+        "size": 65024,
+        "sha256": "1be56d68ce5f3dc7c44c79133c2b3c2576909e1847b5026b61b574e882d2864f"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P33",
+        "size": 775513,
+        "sha256": "0e6d923b1c845bb6c2849f2aa7b4ed9548e3ff319588491a5cd351e943157cc1"
+      }
+    },
+    {
+      "canonicalName": "AM27C64@DIP28",
+      "aliases": ["AM27C64", "AM27C64@DIP28"],
+      "programmers": ["t56", "t76"],
+      "chipType": "memory",
+      "protocolId": "0x07",
+      "variant": "0x3313",
+      "voltagesRaw": "0x5070",
+      "chipInfo": "0x0006",
+      "pinMap": "0x6f15",
+      "dataMemorySize": 0,
+      "dataMemory2Size": 0,
+      "pageSize": 0,
+      "pulseDelay": 100,
+      "codeMemorySize": 8192,
+      "packageDetailsRaw": "0x1c000000",
+      "readBufferSize": 1024,
+      "writeBufferSize": 128,
+      "flagsRaw": "0x00000068",
+      "canErase": false,
+      "chipId": "0x00000115",
+      "chipIdBytesCount": 2,
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P33",
+        "size": 65024,
+        "sha256": "1be56d68ce5f3dc7c44c79133c2b3c2576909e1847b5026b61b574e882d2864f"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P33",
+        "size": 775513,
+        "sha256": "0e6d923b1c845bb6c2849f2aa7b4ed9548e3ff319588491a5cd351e943157cc1"
+      }
+    },
+    {
+      "canonicalName": "AM27C128@DIP28",
+      "aliases": ["AM27C128", "AM27C128@DIP28"],
+      "programmers": ["t56", "t76"],
+      "chipType": "memory",
+      "protocolId": "0x07",
+      "variant": "0x3313",
+      "voltagesRaw": "0x5070",
+      "chipInfo": "0x0006",
+      "pinMap": "0x0c16",
+      "dataMemorySize": 0,
+      "dataMemory2Size": 0,
+      "pageSize": 0,
+      "pulseDelay": 100,
+      "codeMemorySize": 16384,
+      "packageDetailsRaw": "0x1c000000",
+      "readBufferSize": 1024,
+      "writeBufferSize": 128,
+      "flagsRaw": "0x00000068",
+      "canErase": false,
+      "chipId": "0x00000116",
+      "chipIdBytesCount": 2,
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P33",
+        "size": 65024,
+        "sha256": "1be56d68ce5f3dc7c44c79133c2b3c2576909e1847b5026b61b574e882d2864f"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P33",
+        "size": 775513,
+        "sha256": "0e6d923b1c845bb6c2849f2aa7b4ed9548e3ff319588491a5cd351e943157cc1"
+      }
+    },
+    {
+      "canonicalName": "AM27C256@DIP28",
+      "aliases": ["AM27C256", "AM27C256@DIP28"],
+      "programmers": ["t56", "t76"],
+      "chipType": "memory",
+      "protocolId": "0x07",
+      "variant": "0x3211",
+      "voltagesRaw": "0x5070",
+      "chipInfo": "0x0006",
+      "pinMap": "0x0c16",
+      "dataMemorySize": 0,
+      "dataMemory2Size": 0,
+      "pageSize": 0,
+      "pulseDelay": 100,
+      "codeMemorySize": 32768,
+      "packageDetailsRaw": "0x1c000000",
+      "readBufferSize": 1024,
+      "writeBufferSize": 128,
+      "flagsRaw": "0x00000068",
+      "canErase": false,
+      "chipId": "0x00000110",
+      "chipIdBytesCount": 2,
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P32",
+        "size": 66560,
+        "sha256": "03f97a3e866998eaf1b5119b5bae26c5ef494149b6b1da0b6915ebef3dbeab21"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P32",
+        "size": 775513,
+        "sha256": "a8b3a866aa2a98165cefce84e7022d6fc45ac20765fc6a20e846a85032f7c1a3"
+      }
+    },
+    {
+      "canonicalName": "M27C256B@DIP28",
+      "aliases": ["M27C256B", "M27C256B@DIP28"],
+      "programmers": ["t56", "t76"],
+      "chipType": "memory",
+      "protocolId": "0x07",
+      "variant": "0x3211",
+      "voltagesRaw": "0x5070",
+      "chipInfo": "0x0006",
+      "pinMap": "0x0c16",
+      "dataMemorySize": 0,
+      "dataMemory2Size": 0,
+      "pageSize": 0,
+      "pulseDelay": 100,
+      "codeMemorySize": 32768,
+      "packageDetailsRaw": "0x1c000000",
+      "readBufferSize": 1024,
+      "writeBufferSize": 128,
+      "flagsRaw": "0x00000068",
+      "canErase": false,
+      "chipId": "0x0000208d",
+      "chipIdBytesCount": 2,
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P32",
+        "size": 66560,
+        "sha256": "03f97a3e866998eaf1b5119b5bae26c5ef494149b6b1da0b6915ebef3dbeab21"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P32",
+        "size": 775513,
+        "sha256": "a8b3a866aa2a98165cefce84e7022d6fc45ac20765fc6a20e846a85032f7c1a3"
+      }
+    },
+    {
+      "canonicalName": "AM27C512@DIP28",
+      "aliases": ["AM27C512", "AM27C512@DIP28"],
+      "programmers": ["t56", "t76"],
+      "chipType": "memory",
+      "protocolId": "0x07",
+      "variant": "0x3110",
+      "voltagesRaw": "0x5070",
+      "chipInfo": "0x0006",
+      "pinMap": "0x0c16",
+      "dataMemorySize": 0,
+      "dataMemory2Size": 0,
+      "pageSize": 0,
+      "pulseDelay": 100,
+      "codeMemorySize": 65536,
+      "packageDetailsRaw": "0x1c000000",
+      "readBufferSize": 1024,
+      "writeBufferSize": 128,
+      "flagsRaw": "0x00000068",
+      "canErase": false,
+      "chipId": "0x00000191",
+      "chipIdBytesCount": 2,
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P31",
+        "size": 62976,
+        "sha256": "0b5d6efdf4e4fea7c8f482245c6ca1b9492766759a3bde75f213b70bf8c08baf"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P31",
+        "size": 775513,
+        "sha256": "bd4e60cc703799f29ac28db53ced112c95f0beb9575cecdfea080318686a0060"
+      }
+    },
+    {
+      "canonicalName": "M27C512@DIP28",
+      "aliases": ["M27C512", "M27C512@DIP28"],
+      "programmers": ["t56", "t76"],
+      "chipType": "memory",
+      "protocolId": "0x07",
+      "variant": "0x3110",
+      "voltagesRaw": "0x5070",
+      "chipInfo": "0x0006",
+      "pinMap": "0x0c16",
+      "dataMemorySize": 0,
+      "dataMemory2Size": 0,
+      "pageSize": 0,
+      "pulseDelay": 100,
+      "codeMemorySize": 65536,
+      "packageDetailsRaw": "0x1c000000",
+      "readBufferSize": 1024,
+      "writeBufferSize": 128,
+      "flagsRaw": "0x00000068",
+      "canErase": false,
+      "chipId": "0x0000203d",
+      "chipIdBytesCount": 2,
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P31",
+        "size": 62976,
+        "sha256": "0b5d6efdf4e4fea7c8f482245c6ca1b9492766759a3bde75f213b70bf8c08baf"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P31",
+        "size": 775513,
+        "sha256": "bd4e60cc703799f29ac28db53ced112c95f0beb9575cecdfea080318686a0060"
+      }
+    },
+    {
+      "canonicalName": "AT27C512R@DIP28",
+      "aliases": ["AT27C512R", "AT27C512R@DIP28"],
+      "programmers": ["t56", "t76"],
+      "chipType": "memory",
+      "protocolId": "0x07",
+      "variant": "0x3110",
+      "voltagesRaw": "0x5070",
+      "chipInfo": "0x0006",
+      "pinMap": "0x0c16",
+      "dataMemorySize": 0,
+      "dataMemory2Size": 0,
+      "pageSize": 0,
+      "pulseDelay": 100,
+      "codeMemorySize": 65536,
+      "packageDetailsRaw": "0x1c000000",
+      "readBufferSize": 1024,
+      "writeBufferSize": 128,
+      "flagsRaw": "0x00000068",
+      "canErase": false,
+      "chipId": "0x00001e0d",
+      "chipIdBytesCount": 2,
+      "blankValue": "0xff",
+      "t56Algorithm": {
+        "name": "ROM28P31",
+        "size": 62976,
+        "sha256": "0b5d6efdf4e4fea7c8f482245c6ca1b9492766759a3bde75f213b70bf8c08baf"
+      },
+      "t76Algorithm": {
+        "name": "ROM28P31",
+        "size": 775513,
+        "sha256": "bd4e60cc703799f29ac28db53ced112c95f0beb9575cecdfea080318686a0060"
+      }
     }
   ]
 }

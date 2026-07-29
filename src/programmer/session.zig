@@ -10,6 +10,7 @@ const packet = protocol_bytes.packet;
 
 const mp_t56 = 6;
 const mp_t48 = 7;
+const mp_t76 = 8;
 
 pub const Status = enum {
     normal,
@@ -69,15 +70,17 @@ pub fn parseSystemInfo(msg: []const u8) ?SystemInfo {
     };
 
     switch (version) {
-        mp_t48, mp_t56 => {
+        mp_t48, mp_t56, mp_t76 => {
             info.programmer = switch (version) {
                 mp_t48 => .t48,
                 mp_t56 => .t56,
+                mp_t76 => .t76,
                 else => unreachable,
             };
             info.model_name = switch (version) {
                 mp_t48 => "T48",
                 mp_t56 => "T56",
+                mp_t76 => "T76",
                 else => unreachable,
             };
             info.status = if (msg[4] == 0) .bootloader else .normal;
@@ -85,10 +88,14 @@ pub fn parseSystemInfo(msg: []const u8) ?SystemInfo {
             @memcpy(&info.device_code, msg[24..32]);
             @memcpy(&info.serial_number, msg[32..56]);
             const raw_voltage: u32 = @intCast(endian.loadInt(msg[56..60], .little));
-            const scaled_voltage = @as(u64, raw_voltage) * 0xccf6 / 0x27000;
-            info.voltage = @as(f32, @floatFromInt(scaled_voltage)) / 100.0;
+            if (version == mp_t76) {
+                info.voltage = @as(f32, @floatFromInt(raw_voltage)) / 1000.0;
+            } else {
+                const scaled_voltage = @as(u64, raw_voltage) * 0xccf6 / 0x27000;
+                info.voltage = @as(f32, @floatFromInt(scaled_voltage)) / 100.0;
+            }
             info.speed = msg[60];
-            info.external_power = if (version == mp_t56) msg[62] else 0;
+            info.external_power = if (version == mp_t56 or version == mp_t76) msg[62] else 0;
         },
         else => return null,
     }
@@ -120,6 +127,22 @@ test "parse T56 system info" {
     try std.testing.expectEqualStrings("T56", info.model_name);
     try std.testing.expectEqualSlices(u8, "CODE1234", &info.device_code);
     try std.testing.expectEqualStrings("00.12.34", std.mem.sliceTo(&info.firmware_string, 0));
+    try std.testing.expectEqual(@as(u8, 1), info.external_power);
+}
+
+test "parse T76 system info with millivolt scaling" {
+    var msg = [_]u8{0} ** 80;
+    msg[4] = 13;
+    msg[5] = 1;
+    msg[6] = mp_t76;
+    endian.storeInt(msg[56..60], 5000, .little);
+    msg[60] = 3;
+    msg[62] = 1;
+
+    const info = parseSystemInfo(&msg).?;
+    try std.testing.expectEqual(model.Programmer.t76, info.programmer);
+    try std.testing.expectEqualStrings("T76", info.model_name);
+    try std.testing.expectEqual(@as(f32, 5.0), info.voltage);
     try std.testing.expectEqual(@as(u8, 1), info.external_power);
 }
 

@@ -8,6 +8,7 @@ const model = @import("../core/model.zig");
 const protocol_bytes = @import("../programmer/protocol_bytes.zig");
 const session = @import("../programmer/session.zig");
 const t48 = @import("../programmer/t48.zig");
+const t76 = @import("../programmer/t76.zig");
 
 const command = protocol_bytes.command;
 const endpoints = protocol_bytes.endpoint;
@@ -38,6 +39,11 @@ const State = enum {
     send_abort_pin_reset,
     send_t56_bitstream_header,
     send_t56_bitstream_payload,
+    send_t76_bitstream_begin,
+    recv_t76_bitstream_begin,
+    send_t76_bitstream_block,
+    send_t76_bitstream_end,
+    recv_t76_bitstream_end,
     send_begin,
     send_begin_status,
     recv_begin_status,
@@ -93,6 +99,10 @@ const State = enum {
     verify_recv_read_status,
     send_final_end,
     send_abort_end,
+    send_t76_reset,
+    recv_t76_reset,
+    send_abort_t76_reset,
+    recv_abort_t76_reset,
     done,
     failed,
 };
@@ -121,6 +131,12 @@ const Operation = struct {
     data: []u8 = &.{},
     verify_data: []u8 = &.{},
     payload: []u8 = &.{},
+    t56_algorithm: []u8 = &.{},
+    t76_algorithm: []u8 = &.{},
+    algorithm_offset: usize = 0,
+    after_t76_upload: State = .send_begin,
+    t76_frame: [packet.t76_bitstream_packet_len]u8 = [_]u8{0} ** packet.t76_bitstream_packet_len,
+    t76_fpga_dirty: bool = false,
     offset: usize = 0,
     command: [packet.begin_len]u8 = [_]u8{0} ** packet.begin_len,
     transfer: Transfer = .{},
@@ -141,6 +157,8 @@ const Operation = struct {
         if (self.data.len != 0) alloc.free(self.data);
         if (self.verify_data.len != 0) alloc.free(self.verify_data);
         if (self.payload.len != 0) alloc.free(self.payload);
+        if (self.t56_algorithm.len != 0) alloc.free(self.t56_algorithm);
+        if (self.t76_algorithm.len != 0) alloc.free(self.t76_algorithm);
         if (self.result.len != 0) alloc.free(self.result);
         if (self.error_message.len != 0) alloc.free(self.error_message);
         alloc.destroy(self);
@@ -226,6 +244,9 @@ export fn mp_device_detail(name_ptr: u32, name_len: u32, programmer_value: u32) 
         .supports_pin_check = device.pin_check != null and device.supports(.t48),
         .supports_t48 = device.supports(.t48),
         .supports_t56 = device.supports(.t56),
+        .supports_t76 = device.supports(.t76),
+        .t56_algorithm = device.algorithmFor(.t56),
+        .t76_algorithm = device.algorithmFor(.t76),
     };
     var out: std.Io.Writer.Allocating = .init(allocator());
     defer out.deinit();
@@ -233,13 +254,22 @@ export fn mp_device_detail(name_ptr: u32, name_len: u32, programmer_value: u32) 
     return setResult(out.toOwnedSlice() catch return setError("out of memory"));
 }
 
-export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, skip_id_check: u32, continue_on_id_mismatch: u32) u32 {
+export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, skip_id_check: u32, continue_on_id_mismatch: u32, t56_algorithm_ptr: u32, t56_algorithm_len: u32, t76_algorithm_ptr: u32, t76_algorithm_len: u32) u32 {
     if (skip_id_check > 1 or continue_on_id_mismatch > 1) return failStart("invalid boolean option");
     const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
     const memory = memoryFromAbi(memory_value) catch return failStart("invalid memory kind");
     const device_name = sliceConst(device_ptr, device_len);
     const device = catalog.find(device_name, programmer) catch return failStart("device not found or unsupported by requested programmer");
-    const op = allocator().create(Operation) catch return failStart("out of memory");
+    const t56_algorithm = copyOptionalBytes(t56_algorithm_ptr, t56_algorithm_len) catch return failStart("invalid T56 algorithm");
+    const t76_algorithm = copyOptionalBytes(t76_algorithm_ptr, t76_algorithm_len) catch {
+        if (t56_algorithm.len != 0) allocator().free(t56_algorithm);
+        return failStart("invalid T76 algorithm");
+    };
+    const op = allocator().create(Operation) catch {
+        if (t56_algorithm.len != 0) allocator().free(t56_algorithm);
+        if (t76_algorithm.len != 0) allocator().free(t76_algorithm);
+        return failStart("out of memory");
+    };
     op.* = .{
         .kind = .read,
         .requested_programmer = programmer,
@@ -248,13 +278,15 @@ export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: 
         .memory = memory,
         .skip_id_check = skip_id_check != 0,
         .continue_on_id_mismatch = continue_on_id_mismatch != 0,
+        .t56_algorithm = t56_algorithm,
+        .t76_algorithm = t76_algorithm,
     };
     return @intCast(@intFromPtr(op));
 }
 
 export fn mp_start_pin_check(programmer_value: u32, device_ptr: u32, device_len: u32) u32 {
     const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
-    if (programmer == .t56) return failStart("PinCheckUnavailable");
+    if (programmer == .t56 or programmer == .t76) return failStart("PinCheckUnavailable");
     const device_name = sliceConst(device_ptr, device_len);
     const device = catalog.find(device_name, programmer) catch return failStart("device not found or unsupported by requested programmer");
     if (!validPinCheck(device)) return failStart("PinCheckUnavailable");
@@ -269,7 +301,7 @@ export fn mp_start_pin_check(programmer_value: u32, device_ptr: u32, device_len:
     return @intCast(@intFromPtr(op));
 }
 
-export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, erase_num_fuses: u32, erase_pld: u32, verify: u32, skip_id_check: u32, continue_on_id_mismatch: u32, unprotect_before: u32, protect_after: u32) u32 {
+export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len: u32, memory_value: u32, data_ptr: u32, data_len: u32, erase: u32, erase_num_fuses: u32, erase_pld: u32, verify: u32, skip_id_check: u32, continue_on_id_mismatch: u32, unprotect_before: u32, protect_after: u32, t56_algorithm_ptr: u32, t56_algorithm_len: u32, t76_algorithm_ptr: u32, t76_algorithm_len: u32) u32 {
     if (data_len == 0) return failStart("input data is empty");
     if (data_ptr == 0) return failStart("invalid data pointer");
     if (erase > 1 or verify > 1 or skip_id_check > 1 or continue_on_id_mismatch > 1 or unprotect_before > 1 or protect_after > 1) return failStart("invalid boolean option");
@@ -288,8 +320,19 @@ export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len:
     if (unprotect_before != 0 and !flags.off_protect_before) return failStart("ProtectionUnsupported");
     if (protect_after != 0 and !flags.protect_after) return failStart("ProtectionUnsupported");
     const data = allocator().dupe(u8, sliceConst(data_ptr, data_len)) catch return failStart("out of memory");
+    const t56_algorithm = copyOptionalBytes(t56_algorithm_ptr, t56_algorithm_len) catch {
+        allocator().free(data);
+        return failStart("invalid T56 algorithm");
+    };
+    const t76_algorithm = copyOptionalBytes(t76_algorithm_ptr, t76_algorithm_len) catch {
+        allocator().free(data);
+        if (t56_algorithm.len != 0) allocator().free(t56_algorithm);
+        return failStart("invalid T76 algorithm");
+    };
     const op = allocator().create(Operation) catch {
         allocator().free(data);
+        if (t56_algorithm.len != 0) allocator().free(t56_algorithm);
+        if (t76_algorithm.len != 0) allocator().free(t76_algorithm);
         return failStart("out of memory");
     };
     op.* = .{
@@ -307,6 +350,8 @@ export fn mp_start_write_rom(programmer_value: u32, device_ptr: u32, device_len:
         .continue_on_id_mismatch = continue_on_id_mismatch != 0,
         .unprotect_before = unprotect_before != 0,
         .protect_after = protect_after != 0,
+        .t56_algorithm = t56_algorithm,
+        .t76_algorithm = t76_algorithm,
     };
     return @intCast(@intFromPtr(op));
 }
@@ -462,15 +507,50 @@ fn nextTransfer(op: *Operation) !Transfer {
         .send_t56_bitstream_header, .send_post_id_t56_bitstream_header, .send_second_t56_bitstream_header, .send_post_blank_t56_bitstream_header, .send_verify_t56_bitstream_header => {
             @memset(op.command[0..packet.bitstream_header_len], 0);
             op.command[0] = command.write_bitstream;
-            const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
+            const bitstream = op.t56_algorithm;
             if (bitstream.len == 0) return error.AlgorithmUnavailable;
             endian.storeInt(op.command[4..8], bitstream.len, .little);
             return outTransfer(op, endpoints.command, op.command[0..packet.bitstream_header_len]);
         },
         .send_t56_bitstream_payload, .send_post_id_t56_bitstream_payload, .send_second_t56_bitstream_payload, .send_post_blank_t56_bitstream_payload, .send_verify_t56_bitstream_payload => {
-            const bitstream = op.device.algorithmFor(.t56) orelse return error.AlgorithmUnavailable;
+            const bitstream = op.t56_algorithm;
             if (bitstream.len == 0) return error.AlgorithmUnavailable;
             return outTransfer(op, endpoints.command, bitstream);
+        },
+        .send_t76_bitstream_begin => {
+            const bitstream = op.t76_algorithm;
+            if (bitstream.len == 0) return error.AlgorithmUnavailable;
+            @memset(op.t76_frame[0..packet.short_command_len], 0);
+            op.t76_frame[0] = command.write_bitstream;
+            op.t76_frame[1] = 0;
+            endian.storeInt(op.t76_frame[2..4], packet.t76_bitstream_packet_len, .little);
+            endian.storeInt(op.t76_frame[4..8], bitstream.len, .little);
+            return outTransfer(op, endpoints.command, op.t76_frame[0..packet.short_command_len]);
+        },
+        .recv_t76_bitstream_begin, .recv_t76_bitstream_end, .recv_t76_reset, .recv_abort_t76_reset => return inTransfer(endpoints.command, packet.short_command_len),
+        .send_t76_bitstream_block => {
+            const bitstream = op.t76_algorithm;
+            if (op.algorithm_offset >= bitstream.len) return error.InvalidAlgorithm;
+            const len = @min(packet.t76_bitstream_payload_len, bitstream.len - op.algorithm_offset);
+            @memset(&op.t76_frame, 0);
+            op.t76_frame[0] = command.write_bitstream;
+            op.t76_frame[1] = 1;
+            endian.storeInt(op.t76_frame[2..4], len, .little);
+            @memcpy(op.t76_frame[packet.short_command_len .. packet.short_command_len + len], bitstream[op.algorithm_offset .. op.algorithm_offset + len]);
+            return outTransfer(op, endpoints.command, &op.t76_frame);
+        },
+        .send_t76_bitstream_end => {
+            @memset(op.t76_frame[0..packet.short_command_len], 0);
+            op.t76_frame[0] = command.write_bitstream;
+            op.t76_frame[1] = 2;
+            return outTransfer(op, endpoints.command, op.t76_frame[0..packet.short_command_len]);
+        },
+        .send_t76_reset, .send_abort_t76_reset => {
+            @memset(op.command[0..packet.short_command_len], 0);
+            op.command[0] = command.write_bitstream;
+            op.command[1] = 0xaf;
+            endian.storeInt(op.command[4..8], 0xaa55ddee, .little);
+            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
         },
         .send_begin, .send_post_id_begin, .send_second_begin, .send_post_blank_begin, .send_verify_begin => {
             writeBeginPacket(op);
@@ -490,11 +570,12 @@ fn nextTransfer(op: *Operation) !Transfer {
         },
         .recv_chip_id => return inTransfer(endpoints.command, packet.chip_id_len),
         .send_erase => {
-            @memset(op.command[0..packet.erase_len], 0);
+            const erase_len = if (op.programmer == .t76) packet.t76_code_frame_header_len else packet.erase_len;
+            @memset(op.command[0..erase_len], 0);
             op.command[0] = command.erase;
             op.command[2] = op.erase_num_fuses;
             op.command[4] = op.erase_pld;
-            return outTransfer(op, endpoints.command, op.command[0..packet.erase_len]);
+            return outTransfer(op, endpoints.command, op.command[0..erase_len]);
         },
         .recv_erase => return inTransfer(endpoints.command, packet.erase_response_len),
         .send_protect_off, .send_protect_on => {
@@ -509,14 +590,30 @@ fn nextTransfer(op: *Operation) !Transfer {
         },
         .send_write_cmd => {
             const len = currentWriteLen(op);
-            @memset(op.command[0..packet.short_command_len], 0);
+            const command_len = if (op.programmer == .t76) packet.t76_code_frame_header_len else packet.short_command_len;
+            @memset(op.command[0..command_len], 0);
             op.command[0] = writeCommand(op.memory);
             endian.storeInt(op.command[2..4], len, .little);
             endian.storeInt(op.command[4..8], op.offset, .little);
-            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
+            if (op.programmer == .t76) {
+                endian.storeInt(op.command[8..12], blockCount(op.data.len, op.descriptor.write_buffer_size), .little);
+                endian.storeInt(op.command[12..16], len, .little);
+            }
+            return outTransfer(op, endpoints.command, op.command[0..command_len]);
         },
         .send_write_payload => {
             const len = currentWriteLen(op);
+            if (op.programmer == .t76) {
+                const transfer_len = packet.t76_code_frame_header_len + len;
+                if (transfer_len > op.payload.len) return error.PayloadBufferTooSmall;
+                @memset(op.payload[0..packet.t76_code_frame_header_len], 0);
+                op.payload[0] = writeCommand(op.memory);
+                endian.storeInt(op.payload[2..4], len, .little);
+                endian.storeInt(op.payload[4..8], op.offset, .little);
+                endian.storeInt(op.payload[12..16], len, .little);
+                @memcpy(op.payload[packet.t76_code_frame_header_len..transfer_len], op.data[op.offset .. op.offset + len]);
+                return outTransfer(op, endpoints.t76_write_payload, op.payload[0..transfer_len]);
+            }
             const transfer_len = @max(@as(usize, op.descriptor.write_buffer_size), len);
             if (transfer_len > op.payload.len) return error.PayloadBufferTooSmall;
             @memset(op.payload[0..transfer_len], 0);
@@ -525,15 +622,26 @@ fn nextTransfer(op: *Operation) !Transfer {
         },
         .blank_send_read_cmd, .send_read_cmd, .verify_send_read_cmd => {
             const len = if (op.state == .blank_send_read_cmd) currentBlankReadLen(op) else currentReadLen(op);
-            @memset(op.command[0..packet.short_command_len], 0);
+            const command_len = if (op.programmer == .t76) packet.t76_code_frame_header_len else packet.short_command_len;
+            @memset(op.command[0..command_len], 0);
             op.command[0] = readCommand(op.memory);
             endian.storeInt(op.command[2..4], len, .little);
             endian.storeInt(op.command[4..8], op.offset, .little);
-            return outTransfer(op, endpoints.command, op.command[0..packet.short_command_len]);
+            if (op.programmer == .t76) {
+                const total = if (op.state == .blank_send_read_cmd)
+                    memorySize(op.device, op.memory)
+                else if (op.state == .verify_send_read_cmd)
+                    op.verify_data.len
+                else
+                    op.data.len;
+                endian.storeInt(op.command[8..12], blockCount(total, len), .little);
+            }
+            return outTransfer(op, endpoints.command, op.command[0..command_len]);
         },
         .blank_recv_read_payload, .recv_read_payload, .verify_recv_read_payload => {
             const len = if (op.state == .blank_recv_read_payload) currentBlankReadLen(op) else currentReadLen(op);
             if (op.programmer == .t56) return inTransfer(endpoints.command, @intCast(len + packet.t56_read_status_slop));
+            if (op.programmer == .t76) return inTransfer(endpoints.payload, @intCast(len));
             return inTransfer(endpoints.payload, @intCast(@max(len, packet.t48_min_read_payload_len)));
         },
         .done => return .{ .kind = .done },
@@ -550,12 +658,13 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 return error.ShortRead;
             }
             const info = session.parseSystemInfo(data) orelse return error.UnsupportedProgrammer;
-            if (info.programmer != .t48 and info.programmer != .t56) return error.UnsupportedProgrammer;
+            if (info.programmer != .t48 and info.programmer != .t56 and info.programmer != .t76) return error.UnsupportedProgrammer;
             if (info.status == .bootloader) return error.ProgrammerInBootloader;
             if (op.requested_programmer != .auto and op.requested_programmer != info.programmer) return error.ProgrammerMismatch;
             if (!op.device.supports(info.programmer)) return error.UnsupportedProgrammer;
             op.programmer = info.programmer;
             op.descriptor = op.device.descriptor(info.programmer);
+            try validateOperationAlgorithm(op);
             if (op.kind == .pin_check) {
                 if (info.programmer != .t48 or !validPinCheck(op.device)) return error.PinCheckUnavailable;
                 op.state = .send_pin_reset;
@@ -573,9 +682,14 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 if (op.erase and !op.device.can_erase) return error.EraseUnsupported;
                 if (op.verify) op.verify_data = try allocator().alloc(u8, op.data.len);
                 if (info.programmer == .t56 and op.descriptor.write_buffer_size > packet.t56_padded_write_payload_max) return error.PayloadBufferTooSmall;
-                op.payload = try allocator().alloc(u8, @max(@as(usize, op.descriptor.write_buffer_size), 1));
+                const frame_overhead: usize = if (info.programmer == .t76) packet.t76_code_frame_header_len else 0;
+                op.payload = try allocator().alloc(u8, @max(@as(usize, op.descriptor.write_buffer_size) + frame_overhead, 1));
             }
-            op.state = if (op.programmer == .t56) .send_t56_bitstream_header else .send_begin;
+            op.state = switch (op.programmer) {
+                .t56 => .send_t56_bitstream_header,
+                .t76 => startT76Upload(op, .send_begin),
+                else => .send_begin,
+            };
         },
         .send_pin_reset => {
             op.pin_drivers_active = true;
@@ -608,6 +722,25 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_t56_bitstream_header => op.state = .send_t56_bitstream_payload,
         .send_t56_bitstream_payload => op.state = .send_begin,
+        .send_t76_bitstream_begin => {
+            op.t76_fpga_dirty = true;
+            op.state = .recv_t76_bitstream_begin;
+        },
+        .recv_t76_bitstream_begin => {
+            try checkT76Ack(op, data);
+            op.algorithm_offset = 0;
+            op.state = .send_t76_bitstream_block;
+        },
+        .send_t76_bitstream_block => {
+            const remaining = op.t76_algorithm.len - op.algorithm_offset;
+            op.algorithm_offset += @min(packet.t76_bitstream_payload_len, remaining);
+            op.state = if (op.algorithm_offset < op.t76_algorithm.len) .send_t76_bitstream_block else .send_t76_bitstream_end;
+        },
+        .send_t76_bitstream_end => op.state = .recv_t76_bitstream_end,
+        .recv_t76_bitstream_end => {
+            try checkT76Ack(op, data);
+            op.state = op.after_t76_upload;
+        },
         .send_begin => {
             op.transaction_open = true;
             op.state = .send_begin_status;
@@ -624,7 +757,11 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_end_after_chip_id => {
             op.transaction_open = false;
-            op.state = if (op.programmer == .t56) .send_post_id_t56_bitstream_header else .send_post_id_begin;
+            op.state = switch (op.programmer) {
+                .t56 => .send_post_id_t56_bitstream_header,
+                .t76 => startT76Upload(op, .send_post_id_begin),
+                else => .send_post_id_begin,
+            };
         },
         .send_post_id_t56_bitstream_header => op.state = .send_post_id_t56_bitstream_payload,
         .send_post_id_t56_bitstream_payload => op.state = .send_post_id_begin,
@@ -644,7 +781,11 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_end_after_erase => {
             op.transaction_open = false;
-            op.state = if (op.programmer == .t56) .send_second_t56_bitstream_header else .send_second_begin;
+            op.state = switch (op.programmer) {
+                .t56 => .send_second_t56_bitstream_header,
+                .t76 => startT76Upload(op, .send_second_begin),
+                else => .send_second_begin,
+            };
         },
         .send_second_t56_bitstream_header => op.state = .send_second_t56_bitstream_payload,
         .send_second_t56_bitstream_payload => op.state = .send_second_begin,
@@ -676,7 +817,12 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 if (byte != op.device.blank_value) return error.TargetNotBlank;
             }
             op.offset += len;
-            op.state = if (op.programmer == .t48) .blank_send_read_status else afterBlankReadStatus(op);
+            op.state = if (op.programmer == .t48)
+                .blank_send_read_status
+            else if (op.programmer == .t76 and op.offset < memorySize(op.device, op.memory))
+                .blank_recv_read_payload
+            else
+                afterBlankReadStatus(op);
         },
         .blank_send_read_status => op.state = .blank_recv_read_status,
         .blank_recv_read_status => {
@@ -685,7 +831,11 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_end_after_blank => {
             op.transaction_open = false;
-            op.state = if (op.programmer == .t56) .send_post_blank_t56_bitstream_header else .send_post_blank_begin;
+            op.state = switch (op.programmer) {
+                .t56 => .send_post_blank_t56_bitstream_header,
+                .t76 => startT76Upload(op, .send_post_blank_begin),
+                else => .send_post_blank_begin,
+            };
         },
         .send_post_blank_t56_bitstream_header => op.state = .send_post_blank_t56_bitstream_payload,
         .send_post_blank_t56_bitstream_payload => op.state = .send_post_blank_begin,
@@ -700,7 +850,24 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             op.state = if (op.unprotect_before) .send_protect_off else .send_write_cmd;
         },
         .send_write_cmd => op.state = .send_write_payload,
-        .send_write_payload => op.state = .send_write_status,
+        .send_write_payload => {
+            if (op.programmer != .t76) {
+                op.state = .send_write_status;
+                return;
+            }
+            const len = currentWriteLen(op);
+            op.offset += len;
+            if (op.offset < op.data.len) {
+                op.state = .send_write_payload;
+            } else if (op.verify) {
+                op.offset = 0;
+                op.state = .send_end_before_verify;
+            } else if (op.protect_after) {
+                op.state = .send_protect_on;
+            } else {
+                op.state = .send_final_end;
+            }
+        },
         .send_write_status => op.state = .recv_write_status,
         .recv_write_status => {
             try checkStatus(op, data);
@@ -718,7 +885,11 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_end_before_verify => {
             op.transaction_open = false;
-            op.state = if (op.programmer == .t56) .send_verify_t56_bitstream_header else .send_verify_begin;
+            op.state = switch (op.programmer) {
+                .t56 => .send_verify_t56_bitstream_header,
+                .t76 => startT76Upload(op, .send_verify_begin),
+                else => .send_verify_begin,
+            };
         },
         .send_verify_t56_bitstream_header => op.state = .send_verify_t56_bitstream_payload,
         .send_verify_t56_bitstream_payload => op.state = .send_verify_begin,
@@ -748,7 +919,12 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             }
             @memcpy(op.data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
-            op.state = if (op.programmer == .t48) .send_read_status else if (op.offset < op.data.len) .send_read_cmd else .send_final_end;
+            op.state = if (op.programmer == .t48)
+                .send_read_status
+            else if (op.offset < op.data.len)
+                if (op.programmer == .t76) .recv_read_payload else .send_read_cmd
+            else
+                .send_final_end;
         },
         .send_read_status => op.state = .recv_read_status,
         .recv_read_status => {
@@ -765,7 +941,12 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             }
             @memcpy(op.verify_data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
-            op.state = if (op.programmer == .t48) .verify_send_read_status else try afterVerifyReadStatus(op);
+            op.state = if (op.programmer == .t48)
+                .verify_send_read_status
+            else if (op.programmer == .t76 and op.offset < op.verify_data.len)
+                .verify_recv_read_payload
+            else
+                try afterVerifyReadStatus(op);
         },
         .verify_send_read_status => op.state = .verify_recv_read_status,
         .verify_recv_read_status => {
@@ -774,10 +955,22 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_final_end => {
             op.transaction_open = false;
-            op.state = .done;
+            op.state = if (op.t76_fpga_dirty) .send_t76_reset else .done;
         },
         .send_abort_end => {
             op.transaction_open = false;
+            op.state = if (op.t76_fpga_dirty) .send_abort_t76_reset else .failed;
+        },
+        .send_t76_reset => op.state = .recv_t76_reset,
+        .recv_t76_reset => {
+            try checkT76Ack(op, data);
+            op.t76_fpga_dirty = false;
+            op.state = .done;
+        },
+        .send_abort_t76_reset => op.state = .recv_abort_t76_reset,
+        .recv_abort_t76_reset => {
+            try checkT76Ack(op, data);
+            op.t76_fpga_dirty = false;
             op.state = .failed;
         },
         .done, .failed => {},
@@ -795,7 +988,11 @@ fn inTransfer(endpoint: u8, len: u32) Transfer {
 }
 
 fn writeBeginPacket(op: *Operation) void {
-    t48.writeBeginPacket(&op.command, op.programmer, op.descriptor);
+    if (op.programmer == .t76) {
+        t76.writeBeginPacket(&op.command, op.descriptor);
+    } else {
+        t48.writeBeginPacket(&op.command, op.programmer, op.descriptor);
+    }
 }
 
 fn readCommand(memory: model.MemoryKind) u8 {
@@ -868,13 +1065,20 @@ fn devicePinNumber(zif_pin: u8, package_pins: u8) !u8 {
 fn cleanupState(op: *Operation) State {
     if (op.transaction_open and op.state != .send_final_end and op.state != .send_abort_end) return .send_abort_end;
     if (op.pin_drivers_active and op.state != .send_pin_cleanup and op.state != .send_abort_pin_reset) return .send_abort_pin_reset;
+    if (op.t76_fpga_dirty and op.state != .send_t76_reset and op.state != .send_abort_t76_reset) return .send_abort_t76_reset;
     return .failed;
 }
 
 fn abortState(op: *Operation) State {
     if (op.transaction_open) return .send_abort_end;
     if (op.pin_drivers_active) return .send_abort_pin_reset;
+    if (op.t76_fpga_dirty) return .send_abort_t76_reset;
     return .failed;
+}
+
+fn startT76Upload(op: *Operation, after: State) State {
+    op.after_t76_upload = after;
+    return .send_t76_bitstream_begin;
 }
 
 fn shouldCheckChipId(op: *Operation) bool {
@@ -904,6 +1108,32 @@ fn afterVerifyReadStatus(op: *Operation) !State {
     if (op.offset < op.verify_data.len) return .verify_send_read_cmd;
     if (std.mem.eql(u8, op.data, op.verify_data)) return if (op.protect_after) .send_protect_on else .send_final_end;
     return error.VerifyFailed;
+}
+
+fn blockCount(total: usize, chunk: usize) usize {
+    if (chunk == 0) return 0;
+    return (total + chunk - 1) / chunk;
+}
+
+fn validateOperationAlgorithm(op: *Operation) !void {
+    const requirement = op.device.algorithmFor(op.programmer) orelse {
+        if (op.programmer == .t56 or op.programmer == .t76) return error.AlgorithmUnavailable;
+        return;
+    };
+    const bytes = if (op.programmer == .t56) op.t56_algorithm else op.t76_algorithm;
+    if (bytes.len == 0) return error.AlgorithmUnavailable;
+    if (bytes.len != requirement.size) return error.InvalidAlgorithm;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    if (!std.mem.eql(u8, &digest, &requirement.sha256)) return error.InvalidAlgorithm;
+}
+
+fn checkT76Ack(op: *Operation, data: []const u8) !void {
+    if (data.len < packet.short_command_len) {
+        setShortRead(op, data.len, packet.short_command_len);
+        return error.ShortRead;
+    }
+    if (data[1] != 0) return error.ProgrammerStatusError;
 }
 
 fn checkStatus(op: *Operation, data: []const u8) !void {
@@ -950,6 +1180,7 @@ fn programmerFromAbi(value: u32) !model.Programmer {
         0 => .auto,
         1 => .t48,
         2 => .t56,
+        3 => .t76,
         else => error.InvalidProgrammer,
     };
 }
@@ -971,6 +1202,12 @@ fn sliceConst(ptr: u32, len: u32) []const u8 {
     if (ptr == 0 or len == 0) return &.{};
     const bytes: [*]const u8 = @ptrFromInt(ptr);
     return bytes[0..len];
+}
+
+fn copyOptionalBytes(ptr: u32, len: u32) ![]u8 {
+    if (ptr == 0 and len == 0) return &.{};
+    if (ptr == 0 or len == 0) return error.InvalidAlgorithm;
+    return try allocator().dupe(u8, sliceConst(ptr, len));
 }
 
 fn writeJsonString(writer: anytype, text: []const u8) !void {
@@ -1008,7 +1245,7 @@ fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void
     try writer.writeAll(",\"chipType\":");
     try writeJsonString(writer, chipTypeName(summary.chip_type));
     try writer.print(
-        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"canErase\":{},\"supportsUnprotect\":{},\"supportsProtect\":{},\"supportsPinCheck\":{},\"supportsT48\":{},\"supportsT56\":{}}}",
+        ",\"codeMemorySize\":{d},\"dataMemorySize\":{d},\"userMemorySize\":{d},\"packagePins\":{d},\"pageSize\":{d},\"chipId\":{d},\"chipIdBytesCount\":{d},\"blankValue\":{d},\"canErase\":{},\"supportsUnprotect\":{},\"supportsProtect\":{},\"supportsPinCheck\":{},\"supportsT48\":{},\"supportsT56\":{},\"supportsT76\":{},\"algorithms\":[",
         .{
             summary.code_memory_size,
             summary.data_memory_size,
@@ -1024,8 +1261,29 @@ fn writeDeviceSummaryJson(writer: anytype, summary: catalog.DeviceSummary) !void
             summary.supports_pin_check,
             summary.supports_t48,
             summary.supports_t56,
+            summary.supports_t76,
         },
     );
+    var wrote_algorithm = false;
+    if (summary.t56_algorithm) |requirement| {
+        try writeAlgorithmRequirementJson(writer, "t56", requirement);
+        wrote_algorithm = true;
+    }
+    if (summary.t76_algorithm) |requirement| {
+        if (wrote_algorithm) try writer.writeByte(',');
+        try writeAlgorithmRequirementJson(writer, "t76", requirement);
+    }
+    try writer.writeAll("]}");
+}
+
+fn writeAlgorithmRequirementJson(writer: anytype, programmer: []const u8, requirement: anytype) !void {
+    try writer.writeAll("{\"programmer\":");
+    try writeJsonString(writer, programmer);
+    try writer.writeAll(",\"name\":");
+    try writeJsonString(writer, requirement.name);
+    try writer.print(",\"size\":{d},\"sha256\":\"", .{requirement.size});
+    for (requirement.sha256) |byte| try writer.print("{x:0>2}", .{byte});
+    try writer.writeAll("\"}");
 }
 
 fn pinCheckResultJson(op: *Operation) ![]u8 {
@@ -1153,20 +1411,21 @@ fn errorCode(err: anyerror) u32 {
         error.TargetNotBlank => 25,
         error.PinCheckUnavailable => 26,
         error.ProtectionUnsupported => 27,
+        error.InvalidAlgorithm => 28,
         else => 1,
     };
 }
 
 fn phaseCode(state: State) u32 {
     return switch (state) {
-        .send_info, .recv_info, .send_t56_bitstream_header, .send_t56_bitstream_payload, .send_begin, .send_begin_status, .recv_begin_status, .send_post_id_t56_bitstream_header, .send_post_id_t56_bitstream_payload, .send_post_id_begin, .send_post_id_status, .recv_post_id_status, .send_second_t56_bitstream_header, .send_second_t56_bitstream_payload, .send_second_begin, .send_second_status, .recv_second_status, .send_post_blank_t56_bitstream_header, .send_post_blank_t56_bitstream_payload, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => 1,
+        .send_info, .recv_info, .send_t56_bitstream_header, .send_t56_bitstream_payload, .send_t76_bitstream_begin, .recv_t76_bitstream_begin, .send_t76_bitstream_block, .send_t76_bitstream_end, .recv_t76_bitstream_end, .send_begin, .send_begin_status, .recv_begin_status, .send_post_id_t56_bitstream_header, .send_post_id_t56_bitstream_payload, .send_post_id_begin, .send_post_id_status, .recv_post_id_status, .send_second_t56_bitstream_header, .send_second_t56_bitstream_payload, .send_second_begin, .send_second_status, .recv_second_status, .send_post_blank_t56_bitstream_header, .send_post_blank_t56_bitstream_payload, .send_post_blank_begin, .send_post_blank_status, .recv_post_blank_status => 1,
         .send_pin_reset, .send_pin_pulldowns, .send_pin_ground, .send_pin_read, .recv_pin_read => 5,
         .send_chip_id, .recv_chip_id, .send_end_after_chip_id => 2,
         .send_erase, .recv_erase, .send_end_after_erase => 3,
         .send_protect_off, .send_protect_off_status, .recv_protect_off_status, .send_write_cmd, .send_write_payload, .send_write_status, .recv_write_status, .send_protect_on, .send_protect_on_status, .recv_protect_on_status => 4,
         .blank_send_read_cmd, .blank_recv_read_payload, .blank_send_read_status, .blank_recv_read_status, .send_end_after_blank, .send_read_cmd, .recv_read_payload, .send_read_status, .recv_read_status => 5,
         .send_end_before_verify, .send_verify_t56_bitstream_header, .send_verify_t56_bitstream_payload, .send_verify_begin, .send_verify_begin_status, .recv_verify_begin_status, .verify_send_read_cmd, .verify_recv_read_payload, .verify_send_read_status, .verify_recv_read_status => 6,
-        .send_pin_cleanup, .send_abort_pin_reset, .send_final_end, .send_abort_end => 7,
+        .send_pin_cleanup, .send_abort_pin_reset, .send_final_end, .send_abort_end, .send_t76_reset, .recv_t76_reset, .send_abort_t76_reset, .recv_abort_t76_reset => 7,
         .done => 8,
         .failed => 9,
     };
@@ -1199,7 +1458,7 @@ test "JSON string writer escapes generated catalog names" {
 test "Wasm start write rejects empty input before operation allocation" {
     defer resetAbiGlobalsForTest();
 
-    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0);
+    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0);
     try std.testing.expectEqual(@as(u32, 0), rc);
     try std.testing.expectEqualStrings("input data is empty", last_error);
 }
@@ -1207,7 +1466,7 @@ test "Wasm start write rejects empty input before operation allocation" {
 test "Wasm start write rejects a null pointer with non-empty input" {
     defer resetAbiGlobalsForTest();
 
-    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0);
+    const rc = mp_start_write_rom(1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0);
     try std.testing.expectEqual(@as(u32, 0), rc);
     try std.testing.expectEqualStrings("invalid data pointer", last_error);
 }
@@ -1297,12 +1556,13 @@ test "T48 Wasm write operation sequences write status and verify transfers" {
 }
 
 test "Wasm chip ID check ends and restarts the programming transaction" {
+    const device = try catalog.find("M27C64A", .t48);
     var op = Operation{
         .kind = .read,
         .requested_programmer = .t48,
         .programmer = .t48,
-        .device = catalog.devices[1],
-        .descriptor = catalog.devices[1].descriptor(.t48),
+        .device = device,
+        .descriptor = device.descriptor(.t48),
         .memory = .code,
         .state = .recv_chip_id,
         .transaction_open = true,
@@ -1321,13 +1581,14 @@ test "Wasm chip ID check ends and restarts the programming transaction" {
 }
 
 test "Wasm non-erasable writes reject a nonblank target" {
+    const device = try catalog.find("M27C64A", .t48);
     var write_data = [_]u8{0xaa};
     var op = Operation{
         .kind = .write,
         .requested_programmer = .t48,
         .programmer = .t48,
-        .device = catalog.devices[1],
-        .descriptor = catalog.devices[1].descriptor(.t48),
+        .device = device,
+        .descriptor = device.descriptor(.t48),
         .memory = .code,
         .state = .recv_begin_status,
         .data = &write_data,
@@ -1348,17 +1609,18 @@ test "Wasm non-erasable writes reject a nonblank target" {
 }
 
 test "Wasm blank check uses a separate write transaction" {
+    const device = try catalog.find("M27C64A", .t48);
     var write_data = [_]u8{0xaa};
     var op = Operation{
         .kind = .write,
         .requested_programmer = .t48,
         .programmer = .t48,
-        .device = catalog.devices[1],
-        .descriptor = catalog.devices[1].descriptor(.t48),
+        .device = device,
+        .descriptor = device.descriptor(.t48),
         .memory = .code,
         .state = .blank_recv_read_payload,
         .data = &write_data,
-        .offset = catalog.devices[1].code_memory_size - 4,
+        .offset = device.code_memory_size - 4,
         .erase = false,
         .skip_id_check = true,
         .transaction_open = true,
@@ -1544,12 +1806,13 @@ test "Wasm rejects partial data before an erase transaction" {
 }
 
 test "Wasm rejects electrical erase for UV EPROM after programmer detection" {
+    const device = try catalog.find("M27C64A", .t48);
     var data = [_]u8{0xff} ** 8192;
     var op = Operation{
         .kind = .write,
         .requested_programmer = .t48,
-        .device = catalog.devices[1],
-        .descriptor = catalog.devices[1].descriptor(.t48),
+        .device = device,
+        .descriptor = device.descriptor(.t48),
         .memory = .code,
         .state = .recv_info,
         .data = &data,
@@ -1733,6 +1996,116 @@ test "T56 Wasm write payload uses owned payload buffer" {
     try std.testing.expectEqual(@as(u32, 1024), transfer.len);
     try std.testing.expectEqualSlices(u8, &data, payload[0..data.len]);
     try std.testing.expectEqual(@as(u8, 0), payload[data.len]);
+}
+
+test "T76 Wasm upload uses framed blocks and acknowledged boundaries" {
+    var algorithm = [_]u8{0xa5} ** 600;
+    var op = Operation{
+        .kind = .read,
+        .requested_programmer = .t76,
+        .programmer = .t76,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t76),
+        .memory = .code,
+        .state = .send_t76_bitstream_begin,
+        .t76_algorithm = &algorithm,
+        .after_t76_upload = .send_begin,
+    };
+    var ack = [_]u8{0} ** packet.short_command_len;
+
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .in, endpoints.command, packet.short_command_len);
+    try completeTransfer(&op, &ack);
+    try expectNextTransfer(&op, .out, endpoints.command, packet.t76_bitstream_packet_len);
+    try std.testing.expectEqual(@as(u8, 1), op.t76_frame[1]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.t76_bitstream_packet_len);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.command, packet.short_command_len);
+    try std.testing.expectEqual(@as(u8, 2), op.t76_frame[1]);
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .in, endpoints.command, packet.short_command_len);
+    try completeTransfer(&op, &ack);
+    try std.testing.expectEqual(State.send_begin, op.state);
+    try std.testing.expect(op.t76_fpga_dirty);
+}
+
+test "T76 Wasm writes one init command then endpoint 5 frames without status polling" {
+    var data = [_]u8{0x5a} ** 129;
+    var payload = [_]u8{0} ** 144;
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t76,
+        .programmer = .t76,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t76),
+        .memory = .code,
+        .state = .send_write_cmd,
+        .data = &data,
+        .payload = &payload,
+        .transaction_open = true,
+    };
+    op.descriptor.write_buffer_size = 128;
+
+    try expectNextTransfer(&op, .out, endpoints.command, packet.t76_code_frame_header_len);
+    try std.testing.expectEqual(@as(u64, 2), endian.loadInt(op.command[8..12], .little));
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .out, endpoints.t76_write_payload, 144);
+    try completeTransfer(&op, &.{});
+    try std.testing.expectEqual(State.send_write_payload, op.state);
+    try expectNextTransfer(&op, .out, endpoints.t76_write_payload, 17);
+    try completeTransfer(&op, &.{});
+    try std.testing.expectEqual(State.send_final_end, op.state);
+}
+
+test "T76 Wasm reads one init command then consecutive endpoint 2 payloads" {
+    var bytes = [_]u8{0} ** 1500;
+    var op = Operation{
+        .kind = .read,
+        .requested_programmer = .t76,
+        .programmer = .t76,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t76),
+        .memory = .code,
+        .state = .send_read_cmd,
+        .data = &bytes,
+        .transaction_open = true,
+    };
+    op.descriptor.read_buffer_size = 1024;
+    var first = [_]u8{0x11} ** 1024;
+    var second = [_]u8{0x22} ** 476;
+
+    try expectNextTransfer(&op, .out, endpoints.command, packet.t76_code_frame_header_len);
+    try std.testing.expectEqual(@as(u64, 2), endian.loadInt(op.command[8..12], .little));
+    try completeTransfer(&op, &.{});
+    try expectNextTransfer(&op, .in, endpoints.payload, 1024);
+    try completeTransfer(&op, &first);
+    try std.testing.expectEqual(State.recv_read_payload, op.state);
+    try expectNextTransfer(&op, .in, endpoints.payload, 476);
+    try completeTransfer(&op, &second);
+    try std.testing.expectEqual(State.send_final_end, op.state);
+}
+
+test "Wasm rejects algorithms that do not match catalog size or digest" {
+    var bytes = [_]u8{ 1, 2, 3 };
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(&bytes, &digest, .{});
+    var device = catalog.devices[0];
+    device.t76_algorithm = .{ .name = "TEST", .size = bytes.len, .sha256 = digest };
+    var op = Operation{
+        .kind = .read,
+        .requested_programmer = .t76,
+        .programmer = .t76,
+        .device = device,
+        .descriptor = device.descriptor(.t76),
+        .memory = .code,
+        .t76_algorithm = &bytes,
+    };
+
+    try validateOperationAlgorithm(&op);
+    bytes[0] ^= 0xff;
+    try std.testing.expectError(error.InvalidAlgorithm, validateOperationAlgorithm(&op));
 }
 
 fn expectNextTransfer(op: *Operation, kind: TransferKind, endpoint: u8, len: u32) !void {

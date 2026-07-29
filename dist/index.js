@@ -37,12 +37,122 @@ function i(e) {
 		case 25: return "TargetNotBlank";
 		case 26: return "PinCheckUnavailable";
 		case 27: return "ProtectionUnsupported";
+		case 28: return "InvalidAlgorithm";
 		default: return "Unknown";
 	}
 }
 //#endregion
+//#region js/src/algorithm-xml.ts
+var a = 8, o = 512;
+function s(t) {
+	if (typeof t != "string" || t.length === 0) throw new e("algorithm.xml must be a non-empty string.", "InvalidAlgorithm");
+	let n = /* @__PURE__ */ new Map();
+	return async (e) => {
+		let r = `${e.programmer}:${e.name}:${e.sha256}`, i = n.get(r);
+		i || (i = c(t, e), n.set(r, i));
+		try {
+			return (await i).slice();
+		} catch (e) {
+			throw n.delete(r), e;
+		}
+	};
+}
+async function c(t, n) {
+	let r = await ne(te(ee(l(t, n.programmer === "t56" ? "algorithms_T56" : "algorithms_T76"), n.name)), n.programmer === "t76" ? n.size * 2 + a : n.size);
+	re(r);
+	let i = n.programmer === "t56" ? ie(r) : ae(r);
+	if (i.byteLength !== n.size) throw new e(`${n.programmer.toUpperCase()} ${n.name} decoded to ${i.byteLength} bytes; the catalog requires ${n.size}.`, "InvalidAlgorithm");
+	if (await oe(i) !== n.sha256.toLowerCase()) throw new e(`${n.programmer.toUpperCase()} ${n.name} does not match the catalog digest.`, "InvalidAlgorithm");
+	return i;
+}
+function l(t, n) {
+	let r = `<${n}>`, i = `</${n}>`, a = t.indexOf(r), o = a < 0 ? -1 : t.indexOf(i, a + r.length);
+	if (a < 0 || o < 0) throw new e(`algorithm.xml does not contain ${n}.`, "InvalidAlgorithm");
+	return t.slice(a + r.length, o);
+}
+function ee(t, n) {
+	let r = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), i = t.match(RegExp(`<algorithm\\b(?=[^>]*\\bname="${r}")(?=[^>]*\\bbitstream="([^"]+)")[^>]*>`, "s"));
+	if (!i?.[1]) throw new e(`algorithm.xml does not contain ${n}.`, "AlgorithmUnavailable");
+	return i[1].replace(/\s+/g, "");
+}
+function te(t) {
+	try {
+		let e = atob(t), n = new Uint8Array(e.length);
+		for (let t = 0; t < e.length; t += 1) n[t] = e.charCodeAt(t);
+		return n;
+	} catch (t) {
+		throw new e("The algorithm payload is not valid base64.", "InvalidAlgorithm", t);
+	}
+}
+async function ne(t, n) {
+	if (typeof DecompressionStream > "u") throw new e("This browser cannot decompress algorithm.xml payloads.", "InvalidAlgorithm");
+	try {
+		let r = new Blob([ce(t)]).stream().pipeThrough(new DecompressionStream("gzip")).getReader(), i = [], a = 0;
+		for (;;) {
+			let { done: t, value: o } = await r.read();
+			if (t) break;
+			if (a += o.byteLength, a > n) throw await r.cancel(), new e("The decompressed algorithm payload exceeds the catalog size.", "InvalidAlgorithm");
+			i.push(o);
+		}
+		let o = new Uint8Array(a), s = 0;
+		for (let e of i) o.set(e, s), s += e.byteLength;
+		return o;
+	} catch (t) {
+		throw t instanceof e ? t : new e("The algorithm payload is not valid gzip data.", "InvalidAlgorithm", t);
+	}
+}
+function re(t) {
+	if (t.byteLength < a) throw new e("The algorithm payload header is truncated.", "InvalidAlgorithm");
+	let n = d(t, 4), r = 4294967295;
+	for (let e = a; e < t.byteLength; e += 1) {
+		r = (r ^ t[e]) >>> 0;
+		for (let e = 0; e < 8; e += 1) r = (r >>> 1 ^ (r & 1 ? 3988292384 : 0)) >>> 0;
+	}
+	if (r !== n) throw new e("The algorithm payload CRC is invalid.", "InvalidAlgorithm");
+}
+function ie(e) {
+	let t = o - e.byteLength % o, n = new Uint8Array(e.byteLength + t);
+	return n.set(e), n;
+}
+function ae(t) {
+	if (t.byteLength < a) throw new e("The T76 algorithm payload header is truncated.", "InvalidAlgorithm");
+	let n = new Uint8Array(d(t, 0));
+	if (n.byteLength === 0) throw new e("The T76 algorithm payload declares an empty bitstream.", "InvalidAlgorithm");
+	let r = a, i = 0;
+	for (; r < t.byteLength;) {
+		r + 2 > t.byteLength && u();
+		let e = se(t, r);
+		if (r += 2, e !== 0) {
+			i + 2 > n.byteLength && u(), n[i] = e & 255, n[i + 1] = e >>> 8, i += 2;
+			continue;
+		}
+		r + 2 > t.byteLength && u();
+		let a = se(t, r) * 2;
+		r += 2, i + a > n.byteLength && u(), i += a;
+	}
+	return i !== n.byteLength && i + 1 !== n.byteLength && u(), n;
+}
+function u() {
+	throw new e("The T76 algorithm payload has an invalid run-length encoding.", "InvalidAlgorithm");
+}
+async function oe(t) {
+	if (!globalThis.crypto?.subtle) throw new e("Web Crypto is required to validate algorithm payloads.", "InvalidAlgorithm");
+	let n = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", ce(t)));
+	return Array.from(n, (e) => e.toString(16).padStart(2, "0")).join("");
+}
+function se(e, t) {
+	return e[t] | e[t + 1] << 8;
+}
+function d(e, t) {
+	return (e[t] | e[t + 1] << 8 | e[t + 2] << 16 | e[t + 3] << 24) >>> 0;
+}
+function ce(e) {
+	let t = new Uint8Array(e.byteLength);
+	return t.set(e), t.buffer;
+}
+//#endregion
 //#region js/src/wasm.ts
-var a = new TextEncoder(), o = new TextDecoder(), s = class t {
+var f = new TextEncoder(), p = new TextDecoder(), le = class t {
 	exports;
 	operations = /* @__PURE__ */ new Map();
 	constructor(e) {
@@ -59,31 +169,31 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 		return new t(a.instance.exports);
 	}
 	deviceList(e = {}) {
-		let t = a.encode(e.search ?? "");
+		let t = f.encode(e.search ?? "");
 		return this.withBytes(t, (n) => {
-			let r = this.exports.mp_device_list(n, t.byteLength, u(e.programmer ?? "auto"), e.limit ?? 100);
-			return this.throwIfError(r), JSON.parse(o.decode(this.resultBytes()));
+			let r = this.exports.mp_device_list(n, t.byteLength, h(e.programmer ?? "auto"), e.limit ?? 100);
+			return this.throwIfError(r), JSON.parse(p.decode(this.resultBytes()));
 		});
 	}
 	resolveDevice(e, t = "auto") {
-		let n = a.encode(e);
+		let n = f.encode(e);
 		return this.withBytes(n, (e) => {
-			let r = this.exports.mp_device_detail(e, n.byteLength, u(t));
-			return this.throwIfError(r), JSON.parse(o.decode(this.resultBytes()));
+			let r = this.exports.mp_device_detail(e, n.byteLength, h(t));
+			return this.throwIfError(r), JSON.parse(p.decode(this.resultBytes()));
 		});
 	}
 	startReadROM(t) {
-		let n = u(t.programmer), r = d(t.memory);
-		c(t.skipIdCheck, "skipIdCheck"), c(t.continueOnIdMismatch, "continueOnIdMismatch");
-		let i = a.encode(t.device);
-		return this.withBytes(i, (a) => {
-			let o = this.exports.mp_start_read_rom(n, a, i.byteLength, r, +!!t.skipIdCheck, +!!t.continueOnIdMismatch);
-			if (o === 0) throw new e(this.lastError() || "Failed to start readROM operation.");
-			return this.registerOperation(o);
-		});
+		let n = h(t.programmer), r = g(t.memory);
+		m(t.skipIdCheck, "skipIdCheck"), m(t.continueOnIdMismatch, "continueOnIdMismatch");
+		let i = f.encode(t.device);
+		return this.withBytes(i, (a) => this.withBytes(t.t56Algorithm ?? /* @__PURE__ */ new Uint8Array(), (o) => this.withBytes(t.t76Algorithm ?? /* @__PURE__ */ new Uint8Array(), (s) => {
+			let c = this.exports.mp_start_read_rom(n, a, i.byteLength, r, +!!t.skipIdCheck, +!!t.continueOnIdMismatch, o, t.t56Algorithm?.byteLength ?? 0, s, t.t76Algorithm?.byteLength ?? 0);
+			if (c === 0) throw new e(this.lastError() || "Failed to start readROM operation.");
+			return this.registerOperation(c);
+		})));
 	}
 	startPinCheck(t) {
-		let n = u(t.programmer), r = a.encode(t.device);
+		let n = h(t.programmer), r = f.encode(t.device);
 		return this.withBytes(r, (t) => {
 			let i = this.exports.mp_start_pin_check(n, t, r.byteLength);
 			if (i === 0) throw new e(this.lastError() || "Failed to start pin-contact check.", "PinCheckUnavailable");
@@ -91,7 +201,7 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 		});
 	}
 	startWriteROM(t) {
-		let n = u(t.programmer), r = d(t.memory);
+		let n = h(t.programmer), r = g(t.memory);
 		if (!(t.data instanceof Uint8Array)) throw new e("data must be a Uint8Array.", "InvalidInput");
 		for (let [e, n] of [
 			["erase", t.erase],
@@ -100,14 +210,14 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 			["continueOnIdMismatch", t.continueOnIdMismatch],
 			["unprotectBefore", t.unprotectBefore],
 			["protectAfter", t.protectAfter]
-		]) c(n, e);
-		l(t.eraseNumFuses, "eraseNumFuses"), l(t.erasePld, "erasePld");
-		let i = a.encode(t.device);
-		return this.withBytes(i, (a) => this.withBytes(t.data, (o) => {
-			let s = this.exports.mp_start_write_rom(n, a, i.byteLength, r, o, t.data.byteLength, +!!t.erase, t.eraseNumFuses, t.erasePld, +!!t.verify, +!!t.skipIdCheck, +!!t.continueOnIdMismatch, +!!t.unprotectBefore, +!!t.protectAfter);
-			if (s === 0) throw new e(this.lastError() || "Failed to start writeROM operation.");
-			return this.registerOperation(s);
-		}));
+		]) m(n, e);
+		ue(t.eraseNumFuses, "eraseNumFuses"), ue(t.erasePld, "erasePld");
+		let i = f.encode(t.device);
+		return this.withBytes(i, (a) => this.withBytes(t.data, (o) => this.withBytes(t.t56Algorithm ?? /* @__PURE__ */ new Uint8Array(), (s) => this.withBytes(t.t76Algorithm ?? /* @__PURE__ */ new Uint8Array(), (c) => {
+			let l = this.exports.mp_start_write_rom(n, a, i.byteLength, r, o, t.data.byteLength, +!!t.erase, t.eraseNumFuses, t.erasePld, +!!t.verify, +!!t.skipIdCheck, +!!t.continueOnIdMismatch, +!!t.unprotectBefore, +!!t.protectAfter, s, t.t56Algorithm?.byteLength ?? 0, c, t.t76Algorithm?.byteLength ?? 0);
+			if (l === 0) throw new e(this.lastError() || "Failed to start writeROM operation.");
+			return this.registerOperation(l);
+		}))));
 	}
 	disposeOperation(t) {
 		let n = this.operations.get(t);
@@ -200,18 +310,18 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 	}
 	lastError() {
 		let e = this.exports.mp_last_error_ptr(), t = this.exports.mp_last_error_len();
-		return e === 0 || t === 0 ? "" : o.decode(this.memoryBytes(e, t));
+		return e === 0 || t === 0 ? "" : p.decode(this.memoryBytes(e, t));
 	}
 	throwIfError(t) {
 		if (t !== 0) throw new e(this.lastError() || "Wasm call failed.");
 	}
 	operationError(t) {
 		let n = this.exports.mp_operation_error_code(t), r = this.exports.mp_operation_error_ptr(t), a = this.exports.mp_operation_error_len(t);
-		return new e(r === 0 || a === 0 ? this.lastError() || "Wasm operation failed." : o.decode(this.memoryBytes(r, a)), i(n));
+		return new e(r === 0 || a === 0 ? this.lastError() || "Wasm operation failed." : p.decode(this.memoryBytes(r, a)), i(n));
 	}
 	operationProgress(e) {
 		return {
-			phase: ee(this.exports.mp_operation_phase(e)),
+			phase: de(this.exports.mp_operation_phase(e)),
 			offset: this.exports.mp_operation_offset(e),
 			total: this.exports.mp_operation_total(e)
 		};
@@ -254,21 +364,22 @@ var a = new TextEncoder(), o = new TextDecoder(), s = class t {
 		return !1;
 	}
 };
-function c(t, n) {
+function m(t, n) {
 	if (typeof t != "boolean") throw new e(`${n} must be a boolean.`, "InvalidInput");
 }
-function l(t, n) {
+function ue(t, n) {
 	if (typeof t != "number" || !Number.isInteger(t) || t < 0 || t > 255) throw new e(`${n} must be an integer from 0 to 255.`, "InvalidInput");
 }
-function u(t) {
+function h(t) {
 	switch (t) {
 		case "auto": return 0;
 		case "t48": return 1;
 		case "t56": return 2;
+		case "t76": return 3;
 		default: throw new e("Invalid programmer kind.", "InvalidInput");
 	}
 }
-function d(t) {
+function g(t) {
 	switch (t) {
 		case "code": return 0;
 		case "data": return 1;
@@ -276,7 +387,7 @@ function d(t) {
 		default: throw new e("Invalid memory kind.", "InvalidInput");
 	}
 }
-function ee(e) {
+function de(e) {
 	switch (e) {
 		case 1: return "connecting";
 		case 2: return "identifying";
@@ -292,14 +403,14 @@ function ee(e) {
 }
 //#endregion
 //#region node_modules/.pnpm/better-result@2.9.2/node_modules/better-result/dist/index.mjs
-function f(e, t) {
+function _(e, t) {
 	return e === 2 ? ((...e) => e.length >= 2 ? t(e[0], e[1]) : (n) => t(n, e[0])) : e === 3 ? ((...e) => e.length >= 3 ? t(e[0], e[1], e[2]) : (n) => t(n, e[0], e[1])) : e === 4 ? ((...e) => e.length >= 4 ? t(e[0], e[1], e[2], e[3]) : (n) => t(n, e[0], e[1], e[2])) : ((...n) => n.length >= e ? t(...n) : (e) => t(e, ...n));
 }
-var te = (e) => e instanceof Error ? {
+var fe = (e) => e instanceof Error ? {
 	name: e.name,
 	message: e.message,
 	stack: e.stack
-} : e, ne = class e extends Error {
+} : e, pe = class e extends Error {
 	_tag = "Panic";
 	static is(t) {
 		return t instanceof e;
@@ -316,31 +427,31 @@ var te = (e) => e instanceof Error ? {
 			_tag: this._tag,
 			name: this.name,
 			message: this.message,
-			cause: te(this.cause),
+			cause: fe(this.cause),
 			stack: this.stack
 		};
 	}
 	*[Symbol.iterator]() {
-		return yield* y(this), p("Unreachable: Err yielded in Panic but generator continued", this);
+		return yield* C(this), v("Unreachable: Err yielded in Panic but generator continued", this);
 	}
-}, p = (e, t) => {
-	throw new ne({
+}, v = (e, t) => {
+	throw new pe({
 		message: e,
 		cause: t
 	});
-}, m = (e, t) => {
+}, y = (e, t) => {
 	try {
 		return e();
 	} catch (e) {
-		throw p(t, e);
+		throw v(t, e);
 	}
-}, h = async (e, t) => {
+}, b = async (e, t) => {
 	try {
 		return await e();
 	} catch (e) {
-		throw p(t, e);
+		throw v(t, e);
 	}
-}, g = class e {
+}, x = class e {
 	status = "ok";
 	constructor(e) {
 		this.value = e;
@@ -352,7 +463,7 @@ var te = (e) => e instanceof Error ? {
 		return !1;
 	}
 	map(t) {
-		return m(() => new e(t(this.value)), "map callback threw");
+		return y(() => new e(t(this.value)), "map callback threw");
 	}
 	mapError(e) {
 		return this;
@@ -364,13 +475,13 @@ var te = (e) => e instanceof Error ? {
 		return Promise.resolve(this);
 	}
 	andThen(e) {
-		return m(() => e(this.value), "andThen callback threw");
+		return y(() => e(this.value), "andThen callback threw");
 	}
 	andThenAsync(e) {
-		return h(() => e(this.value), "andThenAsync callback threw");
+		return b(() => e(this.value), "andThenAsync callback threw");
 	}
 	match(e) {
-		return m(() => e.ok(this.value), "match ok handler threw");
+		return y(() => e.ok(this.value), "match ok handler threw");
 	}
 	unwrap(e) {
 		return this.value;
@@ -379,10 +490,10 @@ var te = (e) => e instanceof Error ? {
 		return this.value;
 	}
 	tap(e) {
-		return m(() => (e(this.value), this), "tap callback threw");
+		return y(() => (e(this.value), this), "tap callback threw");
 	}
 	tapAsync(e) {
-		return h(async () => (await e(this.value), this), "tapAsync callback threw");
+		return b(async () => (await e(this.value), this), "tapAsync callback threw");
 	}
 	tapError(e) {
 		return this;
@@ -391,15 +502,15 @@ var te = (e) => e instanceof Error ? {
 		return Promise.resolve(this);
 	}
 	tapBoth(e) {
-		return m(() => (e.ok(this.value), this), "tapBoth ok callback threw");
+		return y(() => (e.ok(this.value), this), "tapBoth ok callback threw");
 	}
 	tapBothAsync(e) {
-		return h(async () => (await e.ok(this.value), this), "tapBothAsync ok callback threw");
+		return b(async () => (await e.ok(this.value), this), "tapBothAsync ok callback threw");
 	}
 	*[Symbol.iterator]() {
 		return this.value;
 	}
-}, _ = class e {
+}, me = class e {
 	status = "error";
 	constructor(e) {
 		this.error = e;
@@ -414,13 +525,13 @@ var te = (e) => e instanceof Error ? {
 		return this;
 	}
 	mapError(t) {
-		return m(() => new e(t(this.error)), "mapError callback threw");
+		return y(() => new e(t(this.error)), "mapError callback threw");
 	}
 	tryRecover(e) {
-		return m(() => e(this.error), "tryRecover callback threw");
+		return y(() => e(this.error), "tryRecover callback threw");
 	}
 	tryRecoverAsync(e) {
-		return h(() => e(this.error), "tryRecoverAsync callback threw");
+		return b(() => e(this.error), "tryRecoverAsync callback threw");
 	}
 	andThen(e) {
 		return this;
@@ -429,10 +540,10 @@ var te = (e) => e instanceof Error ? {
 		return Promise.resolve(this);
 	}
 	match(e) {
-		return m(() => e.err(this.error), "match err handler threw");
+		return y(() => e.err(this.error), "match err handler threw");
 	}
 	unwrap(e) {
-		return p(e ?? `Unwrap called on Err: ${String(this.error)}`, this.error);
+		return v(e ?? `Unwrap called on Err: ${String(this.error)}`, this.error);
 	}
 	unwrapOr(e) {
 		return e;
@@ -441,32 +552,32 @@ var te = (e) => e instanceof Error ? {
 		return this;
 	}
 	tapError(e) {
-		return m(() => (e(this.error), this), "tapError callback threw");
+		return y(() => (e(this.error), this), "tapError callback threw");
 	}
 	tapAsync(e) {
 		return Promise.resolve(this);
 	}
 	tapErrorAsync(e) {
-		return h(async () => (await e(this.error), this), "tapErrorAsync callback threw");
+		return b(async () => (await e(this.error), this), "tapErrorAsync callback threw");
 	}
 	tapBoth(e) {
-		return m(() => (e.err(this.error), this), "tapBoth err callback threw");
+		return y(() => (e.err(this.error), this), "tapBoth err callback threw");
 	}
 	tapBothAsync(e) {
-		return h(async () => (await e.err(this.error), this), "tapBothAsync err callback threw");
+		return b(async () => (await e.err(this.error), this), "tapBothAsync err callback threw");
 	}
 	*[Symbol.iterator]() {
-		return yield this, p("Unreachable: Err yielded in Result.gen but generator continued", this.error);
+		return yield this, v("Unreachable: Err yielded in Result.gen but generator continued", this.error);
 	}
 };
-function v(e) {
-	return new g(e);
+function S(e) {
+	return new x(e);
 }
-var re = (e) => e.status === "ok", y = (e) => new _(e), ie = (e) => e.status === "error", ae = (e) => e instanceof Error ? {
+var he = (e) => e.status === "ok", C = (e) => new me(e), ge = (e) => e.status === "error", _e = (e) => e instanceof Error ? {
 	name: e.name,
 	message: e.message,
 	stack: e.stack
-} : e, b = Object.assign((e) => () => {
+} : e, ve = Object.assign((e) => () => {
 	class t extends Error {
 		_tag = e;
 		static is(e) {
@@ -485,16 +596,16 @@ var re = (e) => e.status === "ok", y = (e) => new _(e), ie = (e) => e.status ===
 				_tag: this._tag,
 				name: this.name,
 				message: this.message,
-				cause: ae(this.cause),
+				cause: _e(this.cause),
 				stack: this.stack
 			};
 		}
 		*[Symbol.iterator]() {
-			return yield* y(this), p("Unreachable: Err yielded in TaggedError but generator continued", this);
+			return yield* C(this), v("Unreachable: Err yielded in TaggedError but generator continued", this);
 		}
 	}
 	return t;
-}, { is: (e) => e instanceof Error && "_tag" in e && typeof e._tag == "string" }), x = class extends b("UnhandledException")() {
+}, { is: (e) => e instanceof Error && "_tag" in e && typeof e._tag == "string" }), w = class extends ve("UnhandledException")() {
 	constructor(e) {
 		let t = e.cause instanceof Error ? `Unhandled exception: ${e.cause.message}` : `Unhandled exception: ${String(e.cause)}`;
 		super({
@@ -502,52 +613,52 @@ var re = (e) => e.status === "ok", y = (e) => new _(e), ie = (e) => e.status ===
 			cause: e.cause
 		});
 	}
-}, oe = class extends b("ResultDeserializationError")() {
+}, ye = class extends ve("ResultDeserializationError")() {
 	constructor(e) {
 		super({
 			message: "Failed to deserialize value as Result: expected { status: \"ok\", value } or { status: \"error\", error }",
 			value: e.value
 		});
 	}
-}, se = (e, t) => {
+}, be = (e, t) => {
 	try {
 		return e();
 	} catch (e) {
-		throw p(t, e);
+		throw v(t, e);
 	}
-}, ce = (e, t) => {
+}, xe = (e, t) => {
 	let n = () => {
 		if (typeof e == "function") try {
-			return v(e());
+			return S(e());
 		} catch (e) {
-			return y(new x({ cause: e }));
+			return C(new w({ cause: e }));
 		}
 		try {
-			return v(e.try());
+			return S(e.try());
 		} catch (t) {
 			try {
-				return y(e.catch(t));
+				return C(e.catch(t));
 			} catch (e) {
-				throw p("Result.try catch handler threw", e);
+				throw v("Result.try catch handler threw", e);
 			}
 		}
 	}, r = t?.retry?.times ?? 0, i = n();
 	for (let e = 0; e < r && i.status === "error"; e++) i = n();
 	return i;
-}, le = async (e, t) => {
+}, Se = async (e, t) => {
 	let n = async () => {
 		if (typeof e == "function") try {
-			return v(await e());
+			return S(await e());
 		} catch (e) {
-			return y(new x({ cause: e }));
+			return C(new w({ cause: e }));
 		}
 		try {
-			return v(await e.try());
+			return S(await e.try());
 		} catch (t) {
 			try {
-				return y(await e.catch(t));
+				return C(await e.catch(t));
 			} catch (e) {
-				throw p("Result.tryPromise catch handler threw", e);
+				throw v("Result.tryPromise catch handler threw", e);
 			}
 		}
 	}, r = t?.retry;
@@ -561,27 +672,27 @@ var re = (e) => e.status === "ok", y = (e) => new _(e), ie = (e) => e.status ===
 	}, a = (e) => new Promise((t) => setTimeout(t, e)), o = await n(), s = r.shouldRetry ?? (() => !0);
 	for (let e = 0; e < r.times && o.status === "error"; e++) {
 		let t = o.error;
-		if (!se(() => s(t), "shouldRetry predicate threw")) break;
+		if (!be(() => s(t), "shouldRetry predicate threw")) break;
 		await a(i(e)), o = await n();
 	}
 	return o;
-}, ue = f(2, (e, t) => e.map(t)), de = f(2, (e, t) => e.mapError(t)), fe = f(2, (e, t) => e.tryRecover(t)), pe = f(2, (e, t) => e.andThen(t)), me = f(2, (e, t) => e.tryRecoverAsync(t)), he = f(2, (e, t) => e.andThenAsync(t)), ge = f(2, (e, t) => e.match(t)), _e = f(2, (e, t) => e.tap(t)), ve = f(2, (e, t) => e.tapAsync(t)), ye = f(2, (e, t) => e.tapError(t)), be = f(2, (e, t) => e.tapErrorAsync(t)), xe = f(2, (e, t) => e.tapBoth(t)), Se = f(2, (e, t) => e.tapBothAsync(t)), Ce = (e, t) => e.unwrap(t);
-function S(e) {
-	if (!(typeof e == "object" && e && "status" in e && (e.status === "ok" || e.status === "error"))) return p("Result.gen body must return Result.ok() or Result.err(), got: " + (e === null ? "null" : typeof e == "object" ? JSON.stringify(e) : String(e)));
+}, Ce = _(2, (e, t) => e.map(t)), we = _(2, (e, t) => e.mapError(t)), Te = _(2, (e, t) => e.tryRecover(t)), Ee = _(2, (e, t) => e.andThen(t)), De = _(2, (e, t) => e.tryRecoverAsync(t)), Oe = _(2, (e, t) => e.andThenAsync(t)), ke = _(2, (e, t) => e.match(t)), Ae = _(2, (e, t) => e.tap(t)), je = _(2, (e, t) => e.tapAsync(t)), Me = _(2, (e, t) => e.tapError(t)), Ne = _(2, (e, t) => e.tapErrorAsync(t)), Pe = _(2, (e, t) => e.tapBoth(t)), Fe = _(2, (e, t) => e.tapBothAsync(t)), Ie = (e, t) => e.unwrap(t);
+function T(e) {
+	if (!(typeof e == "object" && e && "status" in e && (e.status === "ok" || e.status === "error"))) return v("Result.gen body must return Result.ok() or Result.err(), got: " + (e === null ? "null" : typeof e == "object" ? JSON.stringify(e) : String(e)));
 }
-var we = f(2, (e, t) => e.unwrapOr(t)), Te = ((e, t) => {
+var Le = _(2, (e, t) => e.unwrapOr(t)), Re = ((e, t) => {
 	let n = e.call(t);
 	if (Symbol.asyncIterator in n) return (async () => {
 		let e = n, t;
 		try {
 			t = await e.next();
 		} catch (e) {
-			throw p("generator body threw", e);
+			throw v("generator body threw", e);
 		}
-		if (S(t.value), !t.done) try {
+		if (T(t.value), !t.done) try {
 			await e.return?.(void 0);
 		} catch (e) {
-			throw p("generator cleanup threw", e);
+			throw v("generator cleanup threw", e);
 		}
 		return t.value;
 	})();
@@ -589,66 +700,66 @@ var we = f(2, (e, t) => e.unwrapOr(t)), Te = ((e, t) => {
 	try {
 		i = r.next();
 	} catch (e) {
-		throw p("generator body threw", e);
+		throw v("generator body threw", e);
 	}
-	if (S(i.value), !i.done) try {
+	if (T(i.value), !i.done) try {
 		r.return?.(void 0);
 	} catch (e) {
-		throw p("generator cleanup threw", e);
+		throw v("generator cleanup threw", e);
 	}
 	return i.value;
 });
-async function* Ee(e) {
+async function* ze(e) {
 	return yield* await e;
 }
-function De(e) {
+function Be(e) {
 	return typeof e == "object" && !!e && "status" in e && (e.status === "ok" && "value" in e || e.status === "error" && "error" in e);
 }
-var Oe = (e) => e.status === "ok" ? {
+var Ve = (e) => e.status === "ok" ? {
 	status: "ok",
 	value: e.value
 } : {
 	status: "error",
 	error: e.error
-}, C = (e) => De(e) ? e.status === "ok" ? new g(e.value) : new _(e.error) : y(new oe({ value: e })), w = {
-	ok: v,
-	isOk: re,
-	err: y,
-	isError: ie,
-	try: ce,
-	tryPromise: le,
-	map: ue,
-	mapError: de,
-	tryRecover: fe,
-	andThen: pe,
-	tryRecoverAsync: me,
-	andThenAsync: he,
-	match: ge,
-	tap: _e,
-	tapAsync: ve,
-	tapError: ye,
-	tapErrorAsync: be,
-	tapBoth: xe,
-	tapBothAsync: Se,
-	unwrap: Ce,
-	unwrapOr: we,
-	gen: Te,
-	await: Ee,
-	serialize: Oe,
-	deserialize: C,
-	hydrate: (e) => C(e),
+}, E = (e) => Be(e) ? e.status === "ok" ? new x(e.value) : new me(e.error) : C(new ye({ value: e })), D = {
+	ok: S,
+	isOk: he,
+	err: C,
+	isError: ge,
+	try: xe,
+	tryPromise: Se,
+	map: Ce,
+	mapError: we,
+	tryRecover: Te,
+	andThen: Ee,
+	tryRecoverAsync: De,
+	andThenAsync: Oe,
+	match: ke,
+	tap: Ae,
+	tapAsync: je,
+	tapError: Me,
+	tapErrorAsync: Ne,
+	tapBoth: Pe,
+	tapBothAsync: Fe,
+	unwrap: Ie,
+	unwrapOr: Le,
+	gen: Re,
+	await: ze,
+	serialize: Ve,
+	deserialize: E,
+	hydrate: (e) => E(e),
 	partition: (e) => {
 		let t = [], n = [];
 		for (let r of e) r.status === "ok" ? t.push(r.value) : n.push(r.error);
 		return [t, n];
 	},
 	flatten: (e) => e.status === "ok" ? e.value : e
-}, T = 42086, E = 2643, D = 0, O = 1, k = /* @__PURE__ */ new WeakMap(), A = class {
+}, O = 42086, k = 2643, A = 6790, j = 0, He = 1, Ue = /* @__PURE__ */ new WeakMap(), M = class {
 	device;
 	closed = !1;
 	state;
 	constructor(e) {
-		this.device = e, this.state = R(e), this.state.references += 1;
+		this.device = e, this.state = L(e), this.state.references += 1;
 	}
 	get opened() {
 		return this.device.opened;
@@ -660,13 +771,13 @@ var Oe = (e) => e.status === "ok" ? {
 		return this.device.productId;
 	}
 	get productName() {
-		return V(this.device.productName);
+		return B(this.device.productName);
 	}
 	get manufacturerName() {
-		return V(this.device.manufacturerName);
+		return B(this.device.manufacturerName);
 	}
 	get serialNumber() {
-		return V(this.device.serialNumber);
+		return B(this.device.serialNumber);
 	}
 	get isClosed() {
 		return this.closed;
@@ -682,7 +793,7 @@ var Oe = (e) => e.status === "ok" ? {
 			this.state.lifecycleActive = !0;
 			try {
 				try {
-					this.device.opened && this.state.claimed && await this.device.releaseInterface?.(D);
+					this.device.opened && this.state.claimed && await this.device.releaseInterface?.(j);
 				} catch {}
 				if (this.state.claimed = !1, this.device.opened && (this.state.openedByLibrary || this.state.poisoned) && await this.device.close(), this.state.poisoned && this.device.opened) throw new e("Failed to reset the programmer after transaction cleanup failed.", "WebUSBLifecycleFailed");
 				this.state.openedByLibrary = !1, this.state.references = 0, this.state.poisoned = !1, this.state.sessionEstablished = !1, this.closed = !0;
@@ -691,39 +802,43 @@ var Oe = (e) => e.status === "ok" ? {
 			}
 		}
 	}
-}, j = class {
+}, We = class {
 	wasm;
 	usb;
-	constructor(e, t = z()) {
-		this.wasm = e, this.usb = t;
+	algorithmProvider;
+	constructor(e, t = R(), n) {
+		this.wasm = e, this.usb = t, this.algorithmProvider = n;
 	}
 	deviceList(e = {}) {
-		return Q(Z(() => this.wasm.deviceList(e)));
+		return Q(rt(() => this.wasm.deviceList(e)));
 	}
 	resolveDevice(e, t = "auto") {
-		return Q(Z(() => this.wasm.resolveDevice(e, t)));
+		return Q(rt(() => this.wasm.resolveDevice(e, t)));
 	}
 	async getProgrammers() {
-		return Q(await X(async () => (await this.usb.getDevices()).filter(B).map(Me)));
+		return Q(await Z(async () => (await this.usb.getDevices()).filter(z).map(Xe)));
 	}
 	async requestProgrammer() {
-		return Q(await X(async () => {
+		return Q(await Z(async () => {
 			let t = await this.usb.requestDevice({ filters: [{
-				vendorId: T,
-				productId: E
+				vendorId: O,
+				productId: k
+			}, {
+				vendorId: O,
+				productId: A
 			}] });
-			if (!B(t)) throw new e("Selected USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
-			return await P(t), L(t);
+			if (!z(t)) throw new e("Selected USB device is not a supported T48/T56/T76 programmer.", "UnsupportedProgrammer");
+			return await F(t), I(t);
 		}));
 	}
 	async connectProgrammer(t) {
-		return Q(await X(async () => {
-			if (!B(t)) throw new e("USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
-			return await P(t), L(t);
+		return Q(await Z(async () => {
+			if (!z(t)) throw new e("USB device is not a supported T48/T56/T76 programmer.", "UnsupportedProgrammer");
+			return await F(t), I(t);
 		}));
 	}
 	async readROM(t) {
-		K(t.programmer), Ie(t), Y(t.signal);
+		K(t.programmer), et(t), X(t.signal);
 		let n = {
 			programmer: t.programmer,
 			programmerKind: t.programmerKind ?? "auto",
@@ -737,47 +852,49 @@ var Oe = (e) => e.status === "ok" ? {
 		return W(r, async () => {
 			let t = this.wasm.resolveDevice(n.device, n.programmerKind);
 			if (!t) throw new e("Device not found or unsupported by requested programmer.", "DeviceNotFound");
-			let i = U(t, n.memory);
+			let i = H(t, n.memory);
 			if (i === 0) throw new e("Selected memory region is empty.", "EmptyMemoryRegion");
-			await N(r);
-			let a = this.wasm.startReadROM({
+			let a = await U(this.algorithmProvider, t, n.programmerKind, r.productId);
+			await P(r);
+			let o = this.wasm.startReadROM({
 				programmer: n.programmerKind,
 				device: n.device,
 				memory: n.memory,
 				skipIdCheck: n.skipIdCheck,
-				continueOnIdMismatch: n.continueOnIdMismatch
-			}), o = await this.wasm.runOperation(a, (e) => M(r, e), {
+				continueOnIdMismatch: n.continueOnIdMismatch,
+				...a
+			}), s = await this.wasm.runOperation(o, (e) => N(r, e), {
 				signal: n.signal,
 				onProgress: n.onProgress,
 				onCleanupFailure: () => G(r)
 			});
-			if (o.byteLength !== i) {
-				let t = o.byteLength < i ? "ShortRead" : "InvalidInput";
-				throw new e(`readROM returned ${o.byteLength} of ${i} expected bytes for the selected memory region.`, t);
+			if (s.byteLength !== i) {
+				let t = s.byteLength < i ? "ShortRead" : "InvalidInput";
+				throw new e(`readROM returned ${s.byteLength} of ${i} expected bytes for the selected memory region.`, t);
 			}
-			return o;
+			return s;
 		});
 	}
 	async checkPinContacts(t) {
-		K(t.programmer), Fe(t.device), q(t.programmerKind, ["auto", "t48"], "programmerKind"), Y(t.signal);
+		K(t.programmer), $e(t.device), q(t.programmerKind, ["auto", "t48"], "programmerKind"), X(t.signal);
 		let n = t.programmerKind ?? "auto", r = t.programmer.device;
 		return W(r, async () => {
 			let i = this.wasm.resolveDevice(t.device, n);
 			if (!i) throw new e("Device not found or unsupported by requested programmer.", "DeviceNotFound");
 			if (!i.supportsPinCheck) throw new e("Pin-contact checking is unavailable for this device and programmer.", "PinCheckUnavailable");
-			await N(r);
+			await P(r);
 			let a = this.wasm.startPinCheck({
 				programmer: n,
 				device: t.device
 			});
-			return Ne(await this.wasm.runOperation(a, (e) => M(r, e), {
+			return Ze(await this.wasm.runOperation(a, (e) => N(r, e), {
 				signal: t.signal,
 				onCleanupFailure: () => G(r)
 			}));
 		});
 	}
 	async writeROM(t) {
-		K(t.programmer), Le(t), Y(t.signal);
+		K(t.programmer), tt(t), X(t.signal);
 		let n = {
 			programmer: t.programmer,
 			programmerKind: t.programmerKind ?? "auto",
@@ -800,7 +917,7 @@ var Oe = (e) => e.status === "ok" ? {
 		return W(r, async () => {
 			let t = this.wasm.resolveDevice(n.device, n.programmerKind);
 			if (!t) throw new e("Device not found or unsupported by requested programmer.", "DeviceNotFound");
-			let i = U(t, n.memory);
+			let i = H(t, n.memory);
 			if (i === 0) throw new e("Selected memory region is empty.", "EmptyMemoryRegion");
 			if (n.data.byteLength > i) throw new e("writeROM data is larger than the selected memory region.", "InputTooLarge");
 			if (n.erase && n.memory !== "code") throw new e("Erase writes are restricted to full code-memory images because erase scope is device-specific.", "InvalidInput");
@@ -808,8 +925,9 @@ var Oe = (e) => e.status === "ok" ? {
 			if (n.erase && !t.canErase) throw new e("The selected device cannot be electrically erased. Externally erase and blank-check it, then write with erase: false.", "InvalidInput");
 			if (n.unprotectBefore && !t.supportsUnprotect) throw new e("The selected device does not support disabling protection before programming.", "ProtectionUnsupported");
 			if (n.protectAfter && !t.supportsProtect) throw new e("The selected device does not support enabling protection after programming.", "ProtectionUnsupported");
-			await N(r);
-			let a = this.wasm.startWriteROM({
+			let a = await U(this.algorithmProvider, t, n.programmerKind, r.productId);
+			await P(r);
+			let o = this.wasm.startWriteROM({
 				programmer: n.programmerKind,
 				device: n.device,
 				memory: n.memory,
@@ -821,9 +939,10 @@ var Oe = (e) => e.status === "ok" ? {
 				skipIdCheck: n.skipIdCheck,
 				continueOnIdMismatch: n.continueOnIdMismatch,
 				unprotectBefore: n.unprotectBefore,
-				protectAfter: n.protectAfter
+				protectAfter: n.protectAfter,
+				...a
 			});
-			await this.wasm.runOperation(a, (e) => M(r, e), {
+			await this.wasm.runOperation(o, (e) => N(r, e), {
 				signal: n.signal,
 				onProgress: n.onProgress,
 				onCleanupFailure: () => G(r)
@@ -831,14 +950,14 @@ var Oe = (e) => e.status === "ok" ? {
 		});
 	}
 };
-async function ke(e = {}) {
-	return Q(await X(async () => new j(await s.load(e.wasmUrl), e.usb ?? z())));
+async function Ge(e = {}) {
+	return Q(await Z(async () => new We(await le.load(e.wasmUrl), e.usb ?? R(), e.algorithmProvider)));
 }
-async function M(e, t) {
+async function N(e, t) {
 	if (t.direction === "out") {
 		let r;
 		try {
-			r = await e.transferOut(t.endpoint, Ae(t.data));
+			r = await e.transferOut(t.endpoint, Ke(t.data));
 		} catch (e) {
 			throw new n(`USB transferOut(${t.endpoint}) failed.`, e);
 		}
@@ -856,15 +975,15 @@ async function M(e, t) {
 	if (!r.data) throw new n(`USB transferIn(${t.endpoint}) returned no data.`);
 	return new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength).slice();
 }
-function Ae(e) {
+function Ke(e) {
 	let t = new Uint8Array(e.byteLength);
 	return t.set(e), t.buffer;
 }
-async function N(e) {
-	await P(e, !0);
+async function P(e) {
+	await F(e, !0);
 }
-async function P(t, n = !1) {
-	let r = R(t);
+async function F(t, n = !1) {
+	let r = L(t);
 	if (r.lifecycleActive || !n && r.operations !== 0) throw new e("A USB lifecycle operation is already in progress for this programmer.", "OperationInProgress");
 	if (n && !t.opened && r.sessionEstablished) throw new e("The programmer connection was lost. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
 	if (n && r.poisoned) throw new e("The programmer is in an unknown hardware state. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
@@ -872,40 +991,51 @@ async function P(t, n = !1) {
 	let i = !1;
 	try {
 		if (!n && r.poisoned) {
-			if (t.opened && r.claimed && await t.releaseInterface?.(D).catch(() => void 0), r.claimed = !1, t.opened && await $("reset the programmer after transaction cleanup failed", () => t.close()), t.opened) throw new e("The programmer remained open after reset. Disconnect and reconnect it before continuing.", "WebUSBLifecycleFailed");
+			if (t.opened && r.claimed && await t.releaseInterface?.(j).catch(() => void 0), r.claimed = !1, t.opened && await $("reset the programmer after transaction cleanup failed", () => t.close()), t.opened) throw new e("The programmer remained open after reset. Disconnect and reconnect it before continuing.", "WebUSBLifecycleFailed");
 			r.openedByLibrary = !1, r.sessionEstablished = !1;
 		}
-		t.opened || (r.claimed = !1, await $("open USB device", () => t.open()), r.openedByLibrary = !0, i = !0), t.configuration?.configurationValue !== O && (await $("select USB configuration 1", () => t.selectConfiguration(O)), r.claimed = !1), r.claimed ||= (await $("claim USB interface 0", () => t.claimInterface(D)), !0), await je(t), r.poisoned = !1, r.sessionEstablished = !0;
+		t.opened || (r.claimed = !1, await $("open USB device", () => t.open()), r.openedByLibrary = !0, i = !0), t.configuration?.configurationValue !== He && (await $("select USB configuration 1", () => t.selectConfiguration(He)), r.claimed = !1), r.claimed ||= (await $("claim USB interface 0", () => t.claimInterface(j)), !0), await qe(t), r.poisoned = !1, r.sessionEstablished = !0;
 	} catch (e) {
-		throw r.claimed && await t.releaseInterface?.(D).catch(() => void 0), r.claimed = !1, i && t.opened && await t.close().catch(() => void 0), i && (r.openedByLibrary = !1, r.sessionEstablished = !1), e;
+		throw r.claimed && await t.releaseInterface?.(j).catch(() => void 0), r.claimed = !1, i && t.opened && await t.close().catch(() => void 0), i && (r.openedByLibrary = !1, r.sessionEstablished = !1), e;
 	} finally {
 		r.lifecycleActive = !1;
 	}
 }
-async function je(t) {
+async function qe(t) {
 	let n = t.configuration?.interfaces;
 	if (!n) return;
-	let r = n.find((e) => e.interfaceNumber === D);
+	let r = n.find((e) => e.interfaceNumber === j);
 	if (!r) throw new e("USB configuration 1 does not expose interface 0.", "WebUSBLifecycleFailed");
-	if (F(r.alternate)) return;
-	let i = r.alternates.find(F) ?? (I(r.alternate) ? r.alternate : r.alternates.find(I));
-	if (!i) throw new e("USB interface 0 does not expose command endpoint 1 in both directions.", "WebUSBLifecycleFailed");
-	if (i !== r.alternate) {
+	let i = (e) => Ye(e, t.productId);
+	if (i(r.alternate)) return;
+	let a = r.alternates.find(i) ?? (t.productId === k ? r.alternates.find(Je) : void 0);
+	if (!a) throw new e("USB interface 0 does not expose the required bulk endpoints for this programmer.", "WebUSBLifecycleFailed");
+	if (a !== r.alternate) {
 		if (!t.selectAlternateInterface) throw new e("USB interface 0 requires an unsupported alternate setting.", "WebUSBLifecycleFailed");
-		await $("select USB interface 0 alternate", () => t.selectAlternateInterface(D, i.alternateSetting));
+		await $("select USB interface 0 alternate", () => t.selectAlternateInterface(j, a.alternateSetting));
 	}
 }
-function F(e) {
-	return [1, 2].every((t) => ["in", "out"].every((n) => e.endpoints.some((e) => e.endpointNumber === t && e.direction === n && e.type === "bulk")));
-}
-function I(e) {
+function Je(e) {
 	return ["in", "out"].every((t) => e.endpoints.some((e) => e.endpointNumber === 1 && e.direction === t && e.type === "bulk"));
 }
-function L(e) {
-	return new A(e);
+function Ye(e, t) {
+	return (t === A ? [
+		[1, "in"],
+		[1, "out"],
+		[2, "in"],
+		[5, "out"]
+	] : [
+		[1, "in"],
+		[1, "out"],
+		[2, "in"],
+		[2, "out"]
+	]).every(([t, n]) => e.endpoints.some((e) => e.endpointNumber === t && e.direction === n && e.type === "bulk"));
 }
-function R(e) {
-	let t = k.get(e);
+function I(e) {
+	return new M(e);
+}
+function L(e) {
+	let t = Ue.get(e);
 	return t || (t = {
 		claimed: !1,
 		lifecycleActive: !1,
@@ -914,29 +1044,29 @@ function R(e) {
 		poisoned: !1,
 		references: 0,
 		sessionEstablished: !1
-	}, k.set(e, t)), t;
+	}, Ue.set(e, t)), t;
 }
-function z() {
+function R() {
 	if (typeof navigator > "u" || !navigator.usb) throw new t();
 	return navigator.usb;
 }
-function B(e) {
-	return e.vendorId === T && e.productId === E;
+function z(e) {
+	return e.vendorId === O && (e.productId === k || e.productId === A);
 }
-function Me(e) {
+function Xe(e) {
 	return {
-		productName: V(e.productName),
-		manufacturerName: V(e.manufacturerName),
-		serialNumber: V(e.serialNumber),
+		productName: B(e.productName),
+		manufacturerName: B(e.manufacturerName),
+		serialNumber: B(e.serialNumber),
 		vendorId: e.vendorId,
 		productId: e.productId,
 		opened: e.opened
 	};
 }
-function V(e) {
+function B(e) {
 	if (e != null) return e.split("\0", 1)[0].trim() || void 0;
 }
-function Ne(t) {
+function Ze(t) {
 	let n;
 	try {
 		n = JSON.parse(new TextDecoder().decode(t));
@@ -945,106 +1075,122 @@ function Ne(t) {
 	}
 	if (typeof n != "object" || !n) throw new e("The pin-contact check returned an invalid result.");
 	let r = n;
-	if (typeof r.passed != "boolean" || !H(r.checkedPins) || !H(r.badPins)) throw new e("The pin-contact check returned an invalid result.");
+	if (typeof r.passed != "boolean" || !V(r.checkedPins) || !V(r.badPins)) throw new e("The pin-contact check returned an invalid result.");
 	return {
 		passed: r.passed,
 		checkedPins: r.checkedPins,
 		badPins: r.badPins
 	};
 }
-function H(e) {
+function V(e) {
 	return Array.isArray(e) && e.every((e) => Number.isInteger(e) && e >= 1 && e <= 40);
 }
-function U(e, t) {
+function H(e, t) {
 	switch (t) {
 		case "code": return e.codeMemorySize;
 		case "data": return e.dataMemorySize;
 		case "user": return e.userMemorySize;
 	}
 }
+async function U(t, n, r, i) {
+	let a = r === "t56" || r === "t76" ? [r] : r === "auto" && i === A ? ["t76"] : r === "auto" && t ? ["t56"] : [];
+	if (a.length === 0) return {};
+	if (!t) throw new e(`A local algorithm provider is required for ${a[0].toUpperCase()} operations.`, "AlgorithmUnavailable");
+	let o = {};
+	for (let r of a) {
+		let i = n.algorithms.find((e) => e.programmer === r);
+		if (!i) throw new e(`The catalog does not define a ${r.toUpperCase()} algorithm for this device.`, "AlgorithmUnavailable");
+		let a = await t(i);
+		if (!(a instanceof Uint8Array)) throw new e("The algorithm provider must return a Uint8Array.", "InvalidAlgorithm");
+		r === "t56" ? o.t56Algorithm = a.slice() : o.t76Algorithm = a.slice();
+	}
+	return o;
+}
 async function W(t, n) {
-	let i = R(t);
+	let i = L(t);
 	if (i.operations !== 0) throw new e("A programmer operation is already in progress for this programmer.", "OperationInProgress");
 	i.operations += 1;
 	try {
-		return Q(w.ok(await n()));
+		return Q(D.ok(await n()));
 	} catch (e) {
-		throw i.poisoned && await Pe(t, i), Q(w.err(r(e)));
+		throw i.poisoned && await Qe(t, i), Q(D.err(r(e)));
 	} finally {
 		--i.operations;
 	}
 }
 function G(e) {
-	R(e).poisoned = !0;
+	L(e).poisoned = !0;
 }
-async function Pe(e, t) {
-	e.opened && t.claimed && await e.releaseInterface?.(D).catch(() => void 0), e.opened && await e.close().catch(() => void 0), t.claimed = !1, e.opened || (t.openedByLibrary = !1), t.sessionEstablished = !1;
+async function Qe(e, t) {
+	e.opened && t.claimed && await e.releaseInterface?.(j).catch(() => void 0), e.opened && await e.close().catch(() => void 0), t.claimed = !1, e.opened || (t.openedByLibrary = !1), t.sessionEstablished = !1;
 }
 function K(t) {
-	if (!(t instanceof A)) throw new e("Use WebUSBProgrammerConnection or a connection returned by the programmer API.", "WebUSBLifecycleFailed");
-	if (!B(t.device)) throw new e("USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
+	if (!(t instanceof M)) throw new e("Use WebUSBProgrammerConnection or a connection returned by the programmer API.", "WebUSBLifecycleFailed");
+	if (!z(t.device)) throw new e("USB device is not a supported T48/T56/T76 programmer.", "UnsupportedProgrammer");
 	if (t.isClosed) throw new e("The programmer connection is closed.", "WebUSBLifecycleFailed");
 }
-function Fe(e) {
-	(typeof e != "string" || e.trim() === "") && J("device must be a non-empty string");
+function $e(e) {
+	(typeof e != "string" || e.trim() === "") && Y("device must be a non-empty string");
 }
-function Ie(e) {
+function et(e) {
 	q(e.programmerKind, [
 		"auto",
 		"t48",
-		"t56"
+		"t56",
+		"t76"
 	], "programmerKind"), q(e.memory, [
 		"code",
 		"data",
 		"user"
-	], "memory"), Re(e, ["skipIdCheck", "continueOnIdMismatch"]);
+	], "memory"), J(e, ["skipIdCheck", "continueOnIdMismatch"]);
 }
-function Le(e) {
-	e.data instanceof Uint8Array || J("data must be a Uint8Array"), q(e.programmerKind, [
+function tt(e) {
+	e.data instanceof Uint8Array || Y("data must be a Uint8Array"), q(e.programmerKind, [
 		"auto",
 		"t48",
-		"t56"
+		"t56",
+		"t76"
 	], "programmerKind"), q(e.memory, [
 		"code",
 		"data",
 		"user"
-	], "memory"), Re(e, [
+	], "memory"), J(e, [
 		"erase",
 		"verify",
 		"skipIdCheck",
 		"continueOnIdMismatch",
 		"unprotectBefore",
 		"protectAfter"
-	]), ze(e.eraseNumFuses, "eraseNumFuses"), ze(e.erasePld, "erasePld");
+	]), nt(e.eraseNumFuses, "eraseNumFuses"), nt(e.erasePld, "erasePld");
 }
 function q(e, t, n) {
-	e !== void 0 && (typeof e != "string" || !t.includes(e)) && J(`${n} is invalid`);
+	e !== void 0 && (typeof e != "string" || !t.includes(e)) && Y(`${n} is invalid`);
 }
-function Re(e, t) {
+function J(e, t) {
 	let n = e;
-	for (let e of t) n[e] !== void 0 && typeof n[e] != "boolean" && J(`${e} must be a boolean`);
+	for (let e of t) n[e] !== void 0 && typeof n[e] != "boolean" && Y(`${e} must be a boolean`);
 }
-function ze(e, t) {
-	e !== void 0 && (typeof e != "number" || !Number.isInteger(e) || e < 0 || e > 255) && J(`${t} must be an integer from 0 to 255`);
-}
-function J(t) {
-	throw new e(t, "InvalidInput");
+function nt(e, t) {
+	e !== void 0 && (typeof e != "number" || !Number.isInteger(e) || e < 0 || e > 255) && Y(`${t} must be an integer from 0 to 255`);
 }
 function Y(t) {
+	throw new e(t, "InvalidInput");
+}
+function X(t) {
 	if (t?.aborted) throw new e("Operation aborted.", "OperationAborted");
 }
-async function X(e) {
+async function Z(e) {
 	try {
-		return w.ok(await e());
+		return D.ok(await e());
 	} catch (e) {
-		return w.err(r(e));
+		return D.err(r(e));
 	}
 }
-function Z(e) {
+function rt(e) {
 	try {
-		return w.ok(e());
+		return D.ok(e());
 	} catch (e) {
-		return w.err(r(e));
+		return D.err(r(e));
 	}
 }
 function Q(e) {
@@ -1059,6 +1205,6 @@ async function $(t, n) {
 	}
 }
 //#endregion
-export { j as BrowserXgecuWebUSB, s as WasmBridge, A as WebUSBProgrammerConnection, n as WebUSBTransferError, t as WebUSBUnavailableError, e as XgecuWebUSBError, ke as createProgrammer, M as performWebUSBTransfer };
+export { We as BrowserXgecuWebUSB, le as WasmBridge, M as WebUSBProgrammerConnection, n as WebUSBTransferError, t as WebUSBUnavailableError, e as XgecuWebUSBError, s as createAlgorithmXmlProvider, Ge as createProgrammer, N as performWebUSBTransfer };
 
 //# sourceMappingURL=index.js.map

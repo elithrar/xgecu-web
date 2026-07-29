@@ -65,7 +65,7 @@ function App() {
       .then((created) => {
         if (cancelled) return;
         setApi(created);
-        setStatus("Ready. Connect a T48/T56 programmer to begin.");
+        setStatus("Ready. Connect a T48 programmer to begin.");
         appendLog("info", "wasm_loaded");
       })
       .catch((error: unknown) => {
@@ -94,7 +94,7 @@ function App() {
   const deviceList = useMemo(() => {
     if (!api) return { devices: [] as DeviceSummary[], error: null as Error | null };
     try {
-      return { devices: api.deviceList({ search: query, limit: 25 }), error: null };
+      return { devices: api.deviceList({ search: query, programmer: "t48", limit: 25 }), error: null };
     } catch (error) {
       return { devices: [] as DeviceSummary[], error: error instanceof Error ? error : new Error(String(error)) };
     }
@@ -390,7 +390,7 @@ function App() {
   return (
     <main className="app-shell">
       <header className="hero">
-        <Text variant="heading1" as="h1">XGecu T48/T56 WebUSB ROM Demo</Text>
+        <Text variant="heading1" as="h1">XGecu T48 WebUSB ROM Demo</Text>
         <div className="banner-stack">
           <Banner
             variant="alert"
@@ -400,7 +400,7 @@ function App() {
           <Banner
             variant="secondary"
             title="Catalog status"
-            description="The seed catalog currently contains T48 targets only; T56 operations require validated T56 catalog records and algorithm payloads."
+            description="This demo stays T48-only. The library also supports T56 and T76 through a user-local algorithm provider."
           />
         </div>
       </header>
@@ -417,7 +417,7 @@ function App() {
             Connect programmer
           </Button>
           <Text variant="secondary">
-            {programmer ? `Connected: ${programmer.productName ?? programmer.serialNumber ?? "T48/T56"}` : "No programmer connected"}
+            {programmer ? `Connected: ${programmer.productName ?? programmer.serialNumber ?? "T48"}` : "No programmer connected"}
           </Text>
         </LayerCard.Primary>
       </LayerCard>

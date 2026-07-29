@@ -269,6 +269,81 @@ describe("BrowserXgecuWebUSB", () => {
     expect(device.selectAlternateInterface).toHaveBeenCalledWith(0, 1);
   });
 
+  it("preserves the T56 command-only endpoint fallback", async () => {
+    const device = new FakeDevice();
+    const empty = { alternateSetting: 0, endpoints: [] } as const;
+    const t56 = {
+      alternateSetting: 3,
+      endpoints: [
+        { endpointNumber: 1, direction: "in", type: "bulk" },
+        { endpointNumber: 1, direction: "out", type: "bulk" }
+      ]
+    } as const;
+    device.opened = true;
+    device.configuration = {
+      configurationValue: 1,
+      interfaces: [{ interfaceNumber: 0, alternate: empty, alternates: [empty, t56] }]
+    };
+
+    await new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device)).connectProgrammer(device);
+
+    expect(device.selectAlternateInterface).toHaveBeenCalledWith(0, 3);
+  });
+
+  it("selects the T76 alternate with endpoint 5 OUT and endpoint 2 IN", async () => {
+    const device = new FakeDevice();
+    device.productId = 0x1a86;
+    device.productName = "T76";
+    const empty = { alternateSetting: 0, endpoints: [] } as const;
+    const t76 = {
+      alternateSetting: 2,
+      endpoints: [
+        { endpointNumber: 1, direction: "in", type: "bulk" },
+        { endpointNumber: 1, direction: "out", type: "bulk" },
+        { endpointNumber: 2, direction: "in", type: "bulk" },
+        { endpointNumber: 5, direction: "out", type: "bulk" }
+      ]
+    } as const;
+    device.opened = true;
+    device.configuration = {
+      configurationValue: 1,
+      interfaces: [{ interfaceNumber: 0, alternate: empty, alternates: [empty, t76] }]
+    };
+
+    await new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device)).connectProgrammer(device);
+
+    expect(device.selectAlternateInterface).toHaveBeenCalledWith(0, 2);
+  });
+
+  it("passes a pinned local T76 algorithm to the Wasm operation", async () => {
+    const device = new FakeDevice();
+    device.productId = 0x1a86;
+    const wasm = fakeWasm();
+    const requirement = {
+      programmer: "t76",
+      name: "ROM28P41",
+      size: 3,
+      sha256: "11".repeat(32)
+    } as const;
+    vi.spyOn(wasm, "resolveDevice").mockReturnValue({
+      ...fakeDeviceSummary(),
+      supportsT76: true,
+      algorithms: [requirement]
+    });
+    const startReadROM = vi.spyOn(wasm, "startReadROM");
+    const provider = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device), provider);
+    const programmer = await api.requestProgrammer();
+
+    await api.readROM({ programmer, device: "AT28C64B", programmerKind: "t76" });
+
+    expect(provider).toHaveBeenCalledWith(requirement);
+    expect(startReadROM).toHaveBeenCalledWith(expect.objectContaining({
+      programmer: "t76",
+      t76Algorithm: new Uint8Array([1, 2, 3])
+    }));
+  });
+
   it("requires an explicit reconnect after a disconnect", async () => {
     const device = new FakeDevice();
     const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
@@ -615,7 +690,9 @@ function fakeDeviceSummary() {
     supportsProtect: true,
     supportsPinCheck: true,
     supportsT48: true,
-    supportsT56: false
+    supportsT56: false,
+    supportsT76: false,
+    algorithms: []
   } as const;
 }
 

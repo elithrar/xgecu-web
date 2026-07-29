@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Shared byte-level constants for the T48/T56 USB protocols.
+//! Shared byte-level constants for the T48/T56/T76 USB protocols.
 //!
 //! These devices intentionally use the same command byte assignments for the
 //! operations this library supports. Keeping them in one namespace makes the
@@ -9,6 +9,7 @@
 pub const endpoint = struct {
     pub const command: u8 = 1;
     pub const payload: u8 = 2;
+    pub const t76_write_payload: u8 = 5;
 };
 
 pub const command = struct {
@@ -44,7 +45,7 @@ pub const command = struct {
 
 pub const packet = struct {
     pub const system_info_request_len: usize = 5;
-    // T48 returns a 63-byte short packet; byte 62 is the last field used by T48/T56.
+    // T48 returns a 63-byte short packet; byte 62 is the last field used by all supported models.
     pub const system_info_response_min_len: usize = 63;
     pub const system_info_response_len: usize = 80;
     pub const short_command_len: usize = 8;
@@ -70,4 +71,7 @@ pub const packet = struct {
     pub const t56_read_status_slop: usize = 16;
     pub const t56_read_payload_max: usize = 64;
     pub const t56_padded_write_payload_max: usize = 4096;
+    pub const t76_bitstream_packet_len: usize = 512;
+    pub const t76_bitstream_payload_len: usize = t76_bitstream_packet_len - short_command_len;
+    pub const t76_code_frame_header_len: usize = 16;
 };

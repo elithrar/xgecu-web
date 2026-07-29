@@ -7,6 +7,7 @@ const session = @import("../programmer/session.zig");
 const protocol_bytes = @import("../programmer/protocol_bytes.zig");
 const protocol = @import("../programmer/protocol.zig");
 const t48 = @import("../programmer/t48.zig");
+const t76 = @import("../programmer/t76.zig");
 const transport_mod = @import("../programmer/transport.zig");
 
 pub const Error = catalog.Error || protocol.Error || error{
@@ -19,6 +20,7 @@ pub const Error = catalog.Error || protocol.Error || error{
     TargetNotBlank,
     PinCheckUnavailable,
     ProtectionUnsupported,
+    InvalidAlgorithm,
 };
 
 pub const PinCheckResult = struct {
@@ -40,6 +42,8 @@ pub const ReadOptions = struct {
     memory: model.MemoryKind = .code,
     skip_id_check: bool = false,
     continue_on_id_mismatch: bool = false,
+    t56_algorithm: ?[]const u8 = null,
+    t76_algorithm: ?[]const u8 = null,
 };
 
 pub const WriteOptions = struct {
@@ -53,6 +57,8 @@ pub const WriteOptions = struct {
     continue_on_id_mismatch: bool = false,
     unprotect_before: bool = false,
     protect_after: bool = false,
+    t56_algorithm: ?[]const u8 = null,
+    t76_algorithm: ?[]const u8 = null,
 };
 
 pub fn deviceList(allocator: std.mem.Allocator, query: ?[]const u8, programmer: model.Programmer, limit: usize) ![]catalog.DeviceSummary {
@@ -101,12 +107,17 @@ pub fn readROM(
     const device = try catalog.find(device_name, info.programmer);
     const size = memorySize(device, options.memory);
     if (size == 0) return Error.EmptyMemoryRegion;
+    const algorithm = algorithmBytes(info.programmer, options.t56_algorithm, options.t76_algorithm);
+    try validateAlgorithm(device, info.programmer, algorithm);
 
     var out = try allocator.alloc(u8, size);
     errdefer allocator.free(out);
 
     const descriptor = device.descriptor(info.programmer);
-    const ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+    var t76_fpga_dirty = false;
+    errdefer if (t76_fpga_dirty) t76.resetFpga(trans) catch {};
+    const ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
+    t76_fpga_dirty = info.programmer == .t76;
     defer ctx.deinit(allocator);
     var read_ctx: ?protocol.BeginContext = null;
     defer if (read_ctx) |restart| restart.deinit(allocator);
@@ -124,7 +135,7 @@ pub fn readROM(
     if (check_id) {
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        read_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        read_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
         protocol_open = true;
     }
 
@@ -132,12 +143,16 @@ pub fn readROM(
     const chunk_size = readChunkSize(info.programmer, descriptor);
     while (offset < out.len) {
         const len = @min(chunk_size, out.len - offset);
-        try protocol.readBlock(info.programmer, trans, options.memory, @intCast(offset), out[offset .. offset + len]);
+        try protocol.readBlock(info.programmer, trans, descriptor, options.memory, @intCast(offset), out.len, out[offset .. offset + len]);
         try checkReadStatus(info.programmer, trans);
         offset += len;
     }
     try protocol.end(info.programmer, trans);
     protocol_open = false;
+    if (t76_fpga_dirty) {
+        try t76.resetFpga(trans);
+        t76_fpga_dirty = false;
+    }
     return out;
 }
 
@@ -160,6 +175,8 @@ pub fn writeROM(
     const flags = model.decodeFlags(device.flags_raw, device.voltages_raw, device.chip_info, device.protocol_id);
     if (options.unprotect_before and !flags.off_protect_before) return Error.ProtectionUnsupported;
     if (options.protect_after and !flags.protect_after) return Error.ProtectionUnsupported;
+    const algorithm = algorithmBytes(info.programmer, options.t56_algorithm, options.t76_algorithm);
+    try validateAlgorithm(device, info.programmer, algorithm);
 
     const descriptor = device.descriptor(info.programmer);
     // Reserve blank-check storage before erase so allocation failure cannot strand an erased target.
@@ -168,8 +185,11 @@ pub fn writeROM(
         blank_buffer = try allocator.alloc(u8, readChunkSize(info.programmer, descriptor));
     }
     defer if (blank_buffer) |buffer| allocator.free(buffer);
+    var t76_fpga_dirty = false;
+    errdefer if (t76_fpga_dirty) t76.resetFpga(trans) catch {};
     var protocol_open = false;
-    const first_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+    const first_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
+    t76_fpga_dirty = info.programmer == .t76;
     defer first_ctx.deinit(allocator);
     protocol_open = true;
     errdefer if (protocol_open) protocol.end(info.programmer, trans) catch {};
@@ -192,22 +212,22 @@ pub fn writeROM(
     if (check_id) {
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        post_id_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        post_id_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
         protocol_open = true;
     }
     if (options.erase) {
         try protocol.erase(info.programmer, trans, options.erase_num_fuses, options.erase_pld);
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        second_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        second_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
         protocol_open = true;
     }
 
     if (options.erase or !device.can_erase) {
-        try ensureBlank(info.programmer, trans, device, options.memory, size, blank_buffer.?);
+        try ensureBlank(info.programmer, trans, device, descriptor, options.memory, size, blank_buffer.?);
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        post_blank_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        post_blank_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
         protocol_open = true;
     }
 
@@ -220,17 +240,19 @@ pub fn writeROM(
     const chunk_size = @max(@as(usize, descriptor.write_buffer_size), 1);
     while (offset < data.len) {
         const len = @min(chunk_size, data.len - offset);
-        try protocol.writeBlock(allocator, info.programmer, trans, descriptor, options.memory, @intCast(offset), data[offset .. offset + len]);
-        const status = try protocol.requestStatus(info.programmer, trans);
-        if (status.overcurrent != 0) return Error.Overcurrent;
-        if (status.error_code != 0) return Error.ProgrammerStatusError;
+        try protocol.writeBlock(allocator, info.programmer, trans, descriptor, options.memory, @intCast(offset), data.len, data[offset .. offset + len]);
+        if (info.programmer != .t76) {
+            const status = try protocol.requestStatus(info.programmer, trans);
+            if (status.overcurrent != 0) return Error.Overcurrent;
+            if (status.error_code != 0) return Error.ProgrammerStatusError;
+        }
         offset += len;
     }
 
     if (options.verify) {
         try protocol.end(info.programmer, trans);
         protocol_open = false;
-        verify_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, device.algorithmFor(info.programmer));
+        verify_ctx = try protocol.begin(allocator, info.programmer, trans, descriptor, algorithm);
         protocol_open = true;
         var actual = try allocator.alloc(u8, data.len);
         defer allocator.free(actual);
@@ -238,7 +260,7 @@ pub fn writeROM(
         const read_chunk = readChunkSize(info.programmer, descriptor);
         while (offset < actual.len) {
             const len = @min(read_chunk, actual.len - offset);
-            try protocol.readBlock(info.programmer, trans, options.memory, @intCast(offset), actual[offset .. offset + len]);
+            try protocol.readBlock(info.programmer, trans, descriptor, options.memory, @intCast(offset), actual.len, actual[offset .. offset + len]);
             try checkReadStatus(info.programmer, trans);
             offset += len;
         }
@@ -250,12 +272,16 @@ pub fn writeROM(
     }
     try protocol.end(info.programmer, trans);
     protocol_open = false;
+    if (t76_fpga_dirty) {
+        try t76.resetFpga(trans);
+        t76_fpga_dirty = false;
+    }
 }
 
 fn openSupportedSession(trans: transport_mod.Transport, requested: model.Programmer) Error!session.SystemInfo {
     const info = try session.getSystemInfo(trans);
     switch (info.programmer) {
-        .t48, .t56 => {},
+        .t48, .t56, .t76 => {},
         else => return Error.UnsupportedProgrammer,
     }
     if (info.status == .bootloader) return Error.ProgrammerInBootloader;
@@ -282,6 +308,7 @@ fn ensureBlank(
     programmer: model.Programmer,
     trans: transport_mod.Transport,
     device: catalog.DeviceRecord,
+    descriptor: t48.Device,
     memory: model.MemoryKind,
     size: usize,
     buffer: []u8,
@@ -290,7 +317,7 @@ fn ensureBlank(
     var offset: usize = 0;
     while (offset < size) {
         const len = @min(buffer.len, size - offset);
-        try protocol.readBlock(programmer, trans, memory, @intCast(offset), buffer[0..len]);
+        try protocol.readBlock(programmer, trans, descriptor, memory, @intCast(offset), size, buffer[0..len]);
         try checkReadStatus(programmer, trans);
         for (buffer[0..len]) |byte| {
             if (byte != device.blank_value) return Error.TargetNotBlank;
@@ -305,6 +332,26 @@ fn memorySize(device: catalog.DeviceRecord, memory: model.MemoryKind) usize {
         .data => device.data_memory_size,
         .user => device.data_memory2_size,
     };
+}
+
+fn algorithmBytes(programmer: model.Programmer, t56_algorithm: ?[]const u8, t76_algorithm: ?[]const u8) ?[]const u8 {
+    return switch (programmer) {
+        .t56 => t56_algorithm,
+        .t76 => t76_algorithm,
+        else => null,
+    };
+}
+
+fn validateAlgorithm(device: catalog.DeviceRecord, programmer: model.Programmer, algorithm: ?[]const u8) Error!void {
+    const requirement = device.algorithmFor(programmer) orelse {
+        if (programmer == .t56 or programmer == .t76) return Error.AlgorithmUnavailable;
+        return;
+    };
+    const bytes = algorithm orelse return Error.AlgorithmUnavailable;
+    if (bytes.len != requirement.size) return Error.InvalidAlgorithm;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    if (!std.mem.eql(u8, &digest, &requirement.sha256)) return Error.InvalidAlgorithm;
 }
 
 fn devicePinNumber(zif_pin: u8, package_pins: u8) Error!u8 {
@@ -344,6 +391,7 @@ fn protectOff(programmer: model.Programmer, trans: transport_mod.Transport) Erro
     return switch (programmer) {
         .t48 => @import("../programmer/t48.zig").protectOff(trans),
         .t56 => @import("../programmer/t56.zig").protectOff(trans),
+        .t76 => @import("../programmer/t76.zig").protectOff(trans),
         else => Error.UnsupportedProgrammer,
     };
 }
@@ -352,6 +400,7 @@ fn protectOn(programmer: model.Programmer, trans: transport_mod.Transport) Error
     return switch (programmer) {
         .t48 => @import("../programmer/t48.zig").protectOn(trans),
         .t56 => @import("../programmer/t56.zig").protectOn(trans),
+        .t76 => @import("../programmer/t76.zig").protectOn(trans),
         else => Error.UnsupportedProgrammer,
     };
 }

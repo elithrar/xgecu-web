@@ -13,7 +13,7 @@ pub const Options = struct {
 };
 
 pub fn resolve(buffer: []u8, options: Options) ![]const u8 {
-    if (options.programmer != .t56) return error.UnsupportedProgrammer;
+    if (options.programmer != .t56 and options.programmer != .t76) return error.UnsupportedProgrammer;
 
     const algorithm_number: u8 = @intCast((options.variant >> 8) & 0xff);
     if (options.protocol_id == 0) return resolveUtility(buffer, options.programmer, algorithm_number);
@@ -36,6 +36,7 @@ pub fn resolve(buffer: []u8, options: Options) ![]const u8 {
 fn resolveUtility(buffer: []u8, programmer: model.Programmer, algorithm_number: u8) ![]const u8 {
     const table = switch (programmer) {
         .t56 => t56_utility_algorithms[0..],
+        .t76 => t76_utility_algorithms[0..],
         else => return error.UnsupportedProgrammer,
     };
     if (algorithm_number >= table.len) return error.InvalidAlgorithmNumber;
@@ -59,6 +60,10 @@ const t56_utility_algorithms = [_][]const u8{
     "vga1024x768", "vga1152x864", "vga1280x1024", "vga1280x800", "vga1440x900", "vga1920x1080", "vga640x480", "vga800x600", "vga_hdmi",
 };
 
+const t76_utility_algorithms = [_][]const u8{
+    "TEST_100M", "TEST_GND", "TEST_LGC_DOWN", "TEST_LGC_PULL", "TEST_VCC",
+};
+
 test "resolve normal T56 algorithm names" {
     var buffer: [32]u8 = undefined;
     try std.testing.expectEqualStrings("ROM28P00", try resolve(&buffer, .{ .programmer = .t56, .protocol_id = 0x07, .variant = 0x0000 }));
@@ -72,4 +77,5 @@ test "resolve utility algorithm names" {
     var buffer: [32]u8 = undefined;
     try std.testing.expectEqualStrings("TTL2", try resolve(&buffer, .{ .programmer = .t56, .protocol_id = 0, .variant = 0x0100 }));
     try std.testing.expectError(error.UnsupportedProgrammer, resolve(&buffer, .{ .programmer = .t48, .protocol_id = 0, .variant = 0x0300 }));
+    try std.testing.expectEqualStrings("TEST_GND", try resolve(&buffer, .{ .programmer = .t76, .protocol_id = 0, .variant = 0x0100 }));
 }

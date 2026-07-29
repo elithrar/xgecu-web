@@ -12,7 +12,18 @@ export interface WasmExports {
   mp_device_list(queryPtr: number, queryLen: number, programmer: number, limit: number): number;
   mp_device_detail(devicePtr: number, deviceLen: number, programmer: number): number;
   mp_start_pin_check(programmer: number, devicePtr: number, deviceLen: number): number;
-  mp_start_read_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, skipIdCheck: number, continueOnIdMismatch: number): number;
+  mp_start_read_rom(
+    programmer: number,
+    devicePtr: number,
+    deviceLen: number,
+    memory: number,
+    skipIdCheck: number,
+    continueOnIdMismatch: number,
+    t56AlgorithmPtr: number,
+    t56AlgorithmLen: number,
+    t76AlgorithmPtr: number,
+    t76AlgorithmLen: number
+  ): number;
   mp_start_write_rom(
     programmer: number,
     devicePtr: number,
@@ -27,7 +38,11 @@ export interface WasmExports {
     skipIdCheck: number,
     continueOnIdMismatch: number,
     unprotectBefore: number,
-    protectAfter: number
+    protectAfter: number,
+    t56AlgorithmPtr: number,
+    t56AlgorithmLen: number,
+    t76AlgorithmPtr: number,
+    t76AlgorithmLen: number
   ): number;
   mp_operation_next(handle: number): number;
   mp_transfer_endpoint(handle: number): number;
@@ -96,24 +111,40 @@ export class WasmBridge {
     });
   }
 
-  startReadROM(options: { programmer: ProgrammerKind; device: string; memory: MemoryKind; skipIdCheck: boolean; continueOnIdMismatch: boolean }): WasmOperationHandle {
+  startReadROM(options: {
+    programmer: ProgrammerKind;
+    device: string;
+    memory: MemoryKind;
+    skipIdCheck: boolean;
+    continueOnIdMismatch: boolean;
+    t56Algorithm?: Uint8Array;
+    t76Algorithm?: Uint8Array;
+  }): WasmOperationHandle {
     const programmer = programmerToAbi(options.programmer);
     const memory = memoryToAbi(options.memory);
     requireBoolean(options.skipIdCheck, "skipIdCheck");
     requireBoolean(options.continueOnIdMismatch, "continueOnIdMismatch");
     const deviceBytes = textEncoder.encode(options.device);
-    return this.withBytes(deviceBytes, (devicePtr) => {
-      const handle = this.exports.mp_start_read_rom(
-        programmer,
-        devicePtr,
-        deviceBytes.byteLength,
-        memory,
-        options.skipIdCheck ? 1 : 0,
-        options.continueOnIdMismatch ? 1 : 0
-      );
-      if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start readROM operation.");
-      return this.registerOperation(handle);
-    });
+    return this.withBytes(deviceBytes, (devicePtr) =>
+      this.withBytes(options.t56Algorithm ?? new Uint8Array(), (t56AlgorithmPtr) =>
+        this.withBytes(options.t76Algorithm ?? new Uint8Array(), (t76AlgorithmPtr) => {
+          const handle = this.exports.mp_start_read_rom(
+            programmer,
+            devicePtr,
+            deviceBytes.byteLength,
+            memory,
+            options.skipIdCheck ? 1 : 0,
+            options.continueOnIdMismatch ? 1 : 0,
+            t56AlgorithmPtr,
+            options.t56Algorithm?.byteLength ?? 0,
+            t76AlgorithmPtr,
+            options.t76Algorithm?.byteLength ?? 0
+          );
+          if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start readROM operation.");
+          return this.registerOperation(handle);
+        })
+      )
+    );
   }
 
   startPinCheck(options: { programmer: "auto" | "t48"; device: string }): WasmOperationHandle {
@@ -141,6 +172,8 @@ export class WasmBridge {
     continueOnIdMismatch: boolean;
     unprotectBefore: boolean;
     protectAfter: boolean;
+    t56Algorithm?: Uint8Array;
+    t76Algorithm?: Uint8Array;
   }): WasmOperationHandle {
     const programmer = programmerToAbi(options.programmer);
     const memory = memoryToAbi(options.memory);
@@ -157,26 +190,34 @@ export class WasmBridge {
     requireByte(options.erasePld, "erasePld");
     const deviceBytes = textEncoder.encode(options.device);
     return this.withBytes(deviceBytes, (devicePtr) =>
-      this.withBytes(options.data, (dataPtr) => {
-        const handle = this.exports.mp_start_write_rom(
-          programmer,
-          devicePtr,
-          deviceBytes.byteLength,
-          memory,
-          dataPtr,
-          options.data.byteLength,
-          options.erase ? 1 : 0,
-          options.eraseNumFuses,
-          options.erasePld,
-          options.verify ? 1 : 0,
-          options.skipIdCheck ? 1 : 0,
-          options.continueOnIdMismatch ? 1 : 0,
-          options.unprotectBefore ? 1 : 0,
-          options.protectAfter ? 1 : 0
-        );
-        if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start writeROM operation.");
-        return this.registerOperation(handle);
-      })
+      this.withBytes(options.data, (dataPtr) =>
+        this.withBytes(options.t56Algorithm ?? new Uint8Array(), (t56AlgorithmPtr) =>
+          this.withBytes(options.t76Algorithm ?? new Uint8Array(), (t76AlgorithmPtr) => {
+            const handle = this.exports.mp_start_write_rom(
+              programmer,
+              devicePtr,
+              deviceBytes.byteLength,
+              memory,
+              dataPtr,
+              options.data.byteLength,
+              options.erase ? 1 : 0,
+              options.eraseNumFuses,
+              options.erasePld,
+              options.verify ? 1 : 0,
+              options.skipIdCheck ? 1 : 0,
+              options.continueOnIdMismatch ? 1 : 0,
+              options.unprotectBefore ? 1 : 0,
+              options.protectAfter ? 1 : 0,
+              t56AlgorithmPtr,
+              options.t56Algorithm?.byteLength ?? 0,
+              t76AlgorithmPtr,
+              options.t76Algorithm?.byteLength ?? 0
+            );
+            if (handle === 0) throw new XgecuWebUSBError(this.lastError() || "Failed to start writeROM operation.");
+            return this.registerOperation(handle);
+          })
+        )
+      )
     );
   }
 
@@ -391,6 +432,8 @@ export function programmerToAbi(programmer: ProgrammerKind): number {
       return 1;
     case "t56":
       return 2;
+    case "t76":
+      return 3;
     default:
       throw new XgecuWebUSBError("Invalid programmer kind.", "InvalidInput");
   }

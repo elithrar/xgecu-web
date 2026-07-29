@@ -11,7 +11,7 @@ High-level API methods return plain values and throw package-owned `XgecuWebUSBE
 ## Core types
 
 ```ts
-type ProgrammerKind = "auto" | "t48" | "t56";
+type ProgrammerKind = "auto" | "t48" | "t56" | "t76";
 type MemoryKind = "code" | "data" | "user";
 
 interface DeviceSummary {
@@ -32,6 +32,13 @@ interface DeviceSummary {
   supportsPinCheck: boolean;
   supportsT48: boolean;
   supportsT56: boolean;
+  supportsT76: boolean;
+  algorithms: readonly {
+    programmer: "t56" | "t76";
+    name: string;
+    size: number;
+    sha256: string;
+  }[];
 }
 ```
 
@@ -70,7 +77,7 @@ try {
 }
 ```
 
-Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `TargetNotBlank`, `PinCheckUnavailable`, `ProtectionUnsupported`, `AlgorithmUnavailable`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
+Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `TargetNotBlank`, `PinCheckUnavailable`, `ProtectionUnsupported`, `AlgorithmUnavailable`, `InvalidAlgorithm`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
 
 ## `createProgrammer(options?)`
 
@@ -97,18 +104,32 @@ Use `usb` to inject a WebUSB-compatible object in tests:
 const api = await createProgrammer({ usb: fakeUsb });
 ```
 
+T56 and T76 operations require an `AlgorithmProvider`. The package helper reads a user-selected local `algorithm.xml`; it does not upload the file or persist vendor payloads:
+
+```ts
+import { createAlgorithmXmlProvider, createProgrammer } from "xgecu-web";
+
+const xml = await algorithmXmlFile.text();
+const api = await createProgrammer({
+  algorithmProvider: createAlgorithmXmlProvider(xml)
+});
+```
+
+The provider and Wasm core both validate the decoded payload against the catalog requirement. Missing data throws `AlgorithmUnavailable`; a CRC, size, or SHA-256 mismatch throws `InvalidAlgorithm`.
+
 ## `deviceList(query?)`
 
-Returns target ROM/device metadata from the generated embedded T48/T56 catalog. The source metadata lives in `data/catalog.json`; `pnpm run generate:catalog` writes `src/catalog/generated.zig`.
+Returns target ROM/device metadata from the generated embedded T48/T56/T76 catalog. The source metadata lives in `data/catalog.json`; `pnpm run generate:catalog` writes `src/catalog/generated.zig`.
 
 ```ts
 const devices = api.deviceList({ search: "AT28", programmer: "t48", limit: 20 });
 ```
 
-T56 results are listed only for catalog records that include a generated T56 algorithm payload.
+T56 and T76 results are listed only when the record includes the corresponding pinned algorithm requirement.
 
 ```ts
 const t56Devices = api.deviceList({ programmer: "t56", limit: 20 });
+const t76Devices = api.deviceList({ programmer: "t76", limit: 20 });
 ```
 
 `search` defaults to an empty string, `programmer` defaults to `"auto"`, and `limit` defaults to `100`.
