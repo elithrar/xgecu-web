@@ -428,7 +428,7 @@ function me(e) {
 	}
 }
 //#endregion
-//#region ../../../../Users/matt/repos/xgecu-web/node_modules/.pnpm/better-result@2.9.2/node_modules/better-result/dist/index.mjs
+//#region node_modules/.pnpm/better-result@2.9.2/node_modules/better-result/dist/index.mjs
 function y(e, t) {
 	return e === 2 ? ((...e) => e.length >= 2 ? t(e[0], e[1]) : (n) => t(n, e[0])) : e === 3 ? ((...e) => e.length >= 3 ? t(e[0], e[1], e[2]) : (n) => t(n, e[0], e[1])) : e === 4 ? ((...e) => e.length >= 4 ? t(e[0], e[1], e[2], e[3]) : (n) => t(n, e[0], e[1], e[2])) : ((...n) => n.length >= e ? t(...n) : (e) => t(e, ...n));
 }
