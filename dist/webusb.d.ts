@@ -1,4 +1,4 @@
-import { DeviceDetail, DeviceListQuery, DeviceSummary, PinCheckOptions, PinCheckResult, ProgrammerConnection, ProgrammerInfo, ReadROMOptions, USBDeviceLike, USBNavigatorLike, WriteROMOptions, XgecuWebUSB } from './types';
+import { AlgorithmProvider, DeviceDetail, DeviceListQuery, DeviceSummary, PinCheckOptions, PinCheckResult, ProgrammerConnection, ProgrammerInfo, ReadROMOptions, USBDeviceLike, USBNavigatorLike, WriteROMOptions, XgecuWebUSB } from './types';
 import { WasmBridge, UsbTransfer } from './wasm';
 export declare class WebUSBProgrammerConnection implements ProgrammerConnection {
     readonly device: USBDeviceLike;
@@ -17,7 +17,8 @@ export declare class WebUSBProgrammerConnection implements ProgrammerConnection 
 export declare class BrowserXgecuWebUSB implements XgecuWebUSB {
     private readonly wasm;
     private readonly usb;
-    constructor(wasm: WasmBridge, usb?: USBNavigatorLike);
+    private readonly algorithmProvider?;
+    constructor(wasm: WasmBridge, usb?: USBNavigatorLike, algorithmProvider?: AlgorithmProvider | undefined);
     deviceList(query?: DeviceListQuery): DeviceSummary[];
     resolveDevice(name: string, programmer?: DeviceListQuery["programmer"]): DeviceDetail | null;
     getProgrammers(): Promise<ProgrammerInfo[]>;
@@ -30,6 +31,7 @@ export declare class BrowserXgecuWebUSB implements XgecuWebUSB {
 export declare function createProgrammer(options?: {
     wasmUrl?: string | URL;
     usb?: USBNavigatorLike;
+    algorithmProvider?: AlgorithmProvider;
 }): Promise<XgecuWebUSB>;
 export declare function performWebUSBTransfer(device: USBDeviceLike, transfer: UsbTransfer): Promise<Uint8Array | void>;
 //# sourceMappingURL=webusb.d.ts.map

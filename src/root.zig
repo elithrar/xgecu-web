@@ -9,11 +9,13 @@ pub const core = struct {
     pub const model = @import("core/model.zig");
 };
 pub const programmer = struct {
+    pub const capabilities = @import("programmer/capabilities.zig");
     pub const protocol_bytes = @import("programmer/protocol_bytes.zig");
     pub const protocol = @import("programmer/protocol.zig");
     pub const session = @import("programmer/session.zig");
     pub const t48 = @import("programmer/t48.zig");
     pub const t56 = @import("programmer/t56.zig");
+    pub const t76 = @import("programmer/t76.zig");
     pub const transport = @import("programmer/transport.zig");
 };
 pub const catalog = @import("catalog/catalog.zig");

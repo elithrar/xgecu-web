@@ -11,15 +11,15 @@ pub const Transport = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        send: *const fn (context: *anyopaque, bytes: []const u8) Error!void,
+        send: *const fn (context: *anyopaque, bytes: []const u8) Error!usize,
         recv: *const fn (context: *anyopaque, out: []u8) Error!usize,
-        write_payload: *const fn (context: *anyopaque, bytes: []const u8, limit: usize) Error!void,
-        read_payload: *const fn (context: *anyopaque, out: []u8, limit: usize) Error!void,
+        write_payload: *const fn (context: *anyopaque, bytes: []const u8, limit: usize) Error!usize,
+        read_payload: *const fn (context: *anyopaque, out: []u8, limit: usize) Error!usize,
         close: *const fn (context: *anyopaque) void,
     };
 
     pub fn send(self: Transport, bytes: []const u8) Error!void {
-        return self.vtable.send(self.context, bytes);
+        if (try self.vtable.send(self.context, bytes) != bytes.len) return Error.Io;
     }
 
     pub fn recv(self: Transport, out: []u8) Error!usize {
@@ -27,15 +27,21 @@ pub const Transport = struct {
     }
 
     pub fn writePayload(self: Transport, bytes: []const u8, limit: usize) Error!void {
-        return self.vtable.write_payload(self.context, bytes, limit);
+        if (try self.vtable.write_payload(self.context, bytes, limit) != bytes.len) return Error.Io;
     }
 
     pub fn readPayload(self: Transport, out: []u8, limit: usize) Error!void {
-        return self.vtable.read_payload(self.context, out, limit);
+        if (try self.vtable.read_payload(self.context, out, limit) != out.len) return Error.Io;
     }
 
     pub fn close(self: Transport) void {
         self.vtable.close(self.context);
+    }
+
+    /// Preserve the primary operation error, but quarantine a transport whose
+    /// protocol cleanup could not be completed.
+    pub fn quarantineOnCleanupFailure(self: Transport, result: anyerror!void) void {
+        result catch self.close();
     }
 };
 
@@ -45,6 +51,13 @@ pub const FakeTransport = struct {
     response: []const u8,
     payload_response: []const u8 = &.{},
     allocator: std.mem.Allocator,
+    send_calls: usize = 0,
+    write_payload_calls: usize = 0,
+    read_payload_calls: usize = 0,
+    short_send_call: ?usize = null,
+    short_write_payload_call: ?usize = null,
+    short_read_payload_call: ?usize = null,
+    close_count: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, response: []const u8) FakeTransport {
         return .{ .allocator = allocator, .response = response };
@@ -61,9 +74,12 @@ pub const FakeTransport = struct {
 
     const vtable = Transport.VTable{ .send = send, .recv = recv, .write_payload = writePayload, .read_payload = readPayload, .close = close };
 
-    fn send(context: *anyopaque, bytes: []const u8) Error!void {
+    fn send(context: *anyopaque, bytes: []const u8) Error!usize {
         const self: *FakeTransport = @ptrCast(@alignCast(context));
-        self.sent.appendSlice(self.allocator, bytes) catch return Error.Io;
+        self.send_calls += 1;
+        const len = if (self.short_send_call == self.send_calls and bytes.len != 0) bytes.len - 1 else bytes.len;
+        self.sent.appendSlice(self.allocator, bytes[0..len]) catch return Error.Io;
+        return len;
     }
 
     fn recv(context: *anyopaque, out: []u8) Error!usize {
@@ -73,20 +89,51 @@ pub const FakeTransport = struct {
         return len;
     }
 
-    fn writePayload(context: *anyopaque, bytes: []const u8, limit: usize) Error!void {
+    fn writePayload(context: *anyopaque, bytes: []const u8, limit: usize) Error!usize {
         _ = limit;
         const self: *FakeTransport = @ptrCast(@alignCast(context));
-        self.payload_sent.appendSlice(self.allocator, bytes) catch return Error.Io;
+        self.write_payload_calls += 1;
+        const len = if (self.short_write_payload_call == self.write_payload_calls and bytes.len != 0) bytes.len - 1 else bytes.len;
+        self.payload_sent.appendSlice(self.allocator, bytes[0..len]) catch return Error.Io;
+        return len;
     }
 
-    fn readPayload(context: *anyopaque, out: []u8, limit: usize) Error!void {
+    fn readPayload(context: *anyopaque, out: []u8, limit: usize) Error!usize {
         _ = limit;
         const self: *FakeTransport = @ptrCast(@alignCast(context));
-        if (self.payload_response.len < out.len) return Error.Io;
-        @memcpy(out, self.payload_response[0..out.len]);
+        self.read_payload_calls += 1;
+        var len = @min(self.payload_response.len, out.len);
+        if (self.short_read_payload_call == self.read_payload_calls and len == out.len and len != 0) len -= 1;
+        @memcpy(out[0..len], self.payload_response[0..len]);
+        return len;
     }
 
     fn close(context: *anyopaque) void {
-        _ = context;
+        const self: *FakeTransport = @ptrCast(@alignCast(context));
+        self.close_count += 1;
     }
 };
+
+test "transport rejects short command and payload transfers" {
+    var fake = FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+
+    fake.short_send_call = 1;
+    try std.testing.expectError(Error.Io, fake.transport().send(&.{ 1, 2 }));
+
+    fake.short_write_payload_call = 1;
+    try std.testing.expectError(Error.Io, fake.transport().writePayload(&.{ 1, 2 }, 0));
+
+    fake.payload_response = &.{ 1, 2 };
+    fake.short_read_payload_call = 1;
+    var out: [2]u8 = undefined;
+    try std.testing.expectError(Error.Io, fake.transport().readPayload(&out, 0));
+}
+
+test "cleanup failure quarantines transport" {
+    var fake = FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+
+    fake.transport().quarantineOnCleanupFailure(Error.Io);
+    try std.testing.expectEqual(@as(usize, 1), fake.close_count);
+}

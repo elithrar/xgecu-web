@@ -2,6 +2,8 @@ import { Result } from "better-result";
 import type { Result as BetterResult } from "better-result";
 import { WebUSBTransferError, WebUSBUnavailableError, XgecuWebUSBError, xgecuErrorFromUnknown } from "./errors";
 import type {
+  AlgorithmProvider,
+  AlgorithmRequirement,
   DeviceDetail,
   DeviceListQuery,
   DeviceSummary,
@@ -9,6 +11,7 @@ import type {
   PinCheckResult,
   ProgrammerConnection,
   ProgrammerInfo,
+  ProgrammerKind,
   ReadROMOptions,
   USBDeviceLike,
   USBNavigatorLike,
@@ -19,13 +22,15 @@ import { WasmBridge } from "./wasm";
 import type { UsbTransfer } from "./wasm";
 
 const XGECU_VENDOR_ID = 0xa466;
-const XGECU_PRODUCT_ID = 0x0a53;
+const T48_T56_PRODUCT_ID = 0x0a53;
+const T76_PRODUCT_ID = 0x1a86;
 const INTERFACE_NUMBER = 0;
 const DEFAULT_CONFIGURATION = 1;
 const deviceStates = new WeakMap<USBDeviceLike, DeviceState>();
 
 interface DeviceState {
   claimed: boolean;
+  detectedProgrammer?: Exclude<ProgrammerKind, "auto">;
   lifecycleActive: boolean;
   openedByLibrary: boolean;
   operations: number;
@@ -100,6 +105,7 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
       this.state.references = 0;
       this.state.poisoned = false;
       this.state.sessionEstablished = false;
+      this.state.detectedProgrammer = undefined;
       this.closed = true;
     } finally {
       this.state.lifecycleActive = false;
@@ -110,7 +116,8 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
 export class BrowserXgecuWebUSB implements XgecuWebUSB {
   constructor(
     private readonly wasm: WasmBridge,
-    private readonly usb: USBNavigatorLike = requireWebUSB()
+    private readonly usb: USBNavigatorLike = requireWebUSB(),
+    private readonly algorithmProvider?: AlgorithmProvider
   ) {}
 
   deviceList(query: DeviceListQuery = {}): DeviceSummary[] {
@@ -131,10 +138,13 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   async requestProgrammer(): Promise<ProgrammerConnection> {
     return unwrapInternal(await resultFromPromise(async () => {
       const device = await this.usb.requestDevice({
-        filters: [{ vendorId: XGECU_VENDOR_ID, productId: XGECU_PRODUCT_ID }]
+        filters: [
+          { vendorId: XGECU_VENDOR_ID, productId: T48_T56_PRODUCT_ID },
+          { vendorId: XGECU_VENDOR_ID, productId: T76_PRODUCT_ID }
+        ]
       });
       if (!isSupportedUsbId(device)) {
-        throw new XgecuWebUSBError("Selected USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
+        throw new XgecuWebUSBError("Selected USB device is not a supported T48/T56/T76 programmer.", "UnsupportedProgrammer");
       }
       await openAndClaim(device);
       return connectionFor(device);
@@ -144,7 +154,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   async connectProgrammer(device: USBDeviceLike): Promise<ProgrammerConnection> {
     return unwrapInternal(await resultFromPromise(async () => {
       if (!isSupportedUsbId(device)) {
-        throw new XgecuWebUSBError("USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
+        throw new XgecuWebUSBError("USB device is not a supported T48/T56/T76 programmer.", "UnsupportedProgrammer");
       }
       await openAndClaim(device);
       return connectionFor(device);
@@ -172,12 +182,20 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       const size = memorySize(device, operation.memory);
       if (size === 0) throw new XgecuWebUSBError("Selected memory region is empty.", "EmptyMemoryRegion");
       await ensureReady(usbDevice);
+      const algorithmProgrammer = await programmerForAlgorithms(
+        this.wasm,
+        usbDevice,
+        operation.programmerKind,
+        this.algorithmProvider
+      );
+      const algorithms = await loadAlgorithms(this.algorithmProvider, device, algorithmProgrammer);
       const handle = this.wasm.startReadROM({
         programmer: operation.programmerKind,
         device: operation.device,
         memory: operation.memory,
         skipIdCheck: operation.skipIdCheck,
-        continueOnIdMismatch: operation.continueOnIdMismatch
+        continueOnIdMismatch: operation.continueOnIdMismatch,
+        ...algorithms
       });
       const bytes = await this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(usbDevice, transfer), {
         signal: operation.signal,
@@ -266,6 +284,13 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
         throw new XgecuWebUSBError("The selected device does not support enabling protection after programming.", "ProtectionUnsupported");
       }
       await ensureReady(usbDevice);
+      const algorithmProgrammer = await programmerForAlgorithms(
+        this.wasm,
+        usbDevice,
+        operation.programmerKind,
+        this.algorithmProvider
+      );
+      const algorithms = await loadAlgorithms(this.algorithmProvider, device, algorithmProgrammer);
       const handle = this.wasm.startWriteROM({
         programmer: operation.programmerKind,
         device: operation.device,
@@ -278,7 +303,8 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
         skipIdCheck: operation.skipIdCheck,
         continueOnIdMismatch: operation.continueOnIdMismatch,
         unprotectBefore: operation.unprotectBefore,
-        protectAfter: operation.protectAfter
+        protectAfter: operation.protectAfter,
+        ...algorithms
       });
       await this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(usbDevice, transfer), {
         signal: operation.signal,
@@ -289,10 +315,10 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
   }
 }
 
-export async function createProgrammer(options: { wasmUrl?: string | URL; usb?: USBNavigatorLike } = {}): Promise<XgecuWebUSB> {
+export async function createProgrammer(options: { wasmUrl?: string | URL; usb?: USBNavigatorLike; algorithmProvider?: AlgorithmProvider } = {}): Promise<XgecuWebUSB> {
   return unwrapInternal(await resultFromPromise(async () => {
     const wasm = await WasmBridge.load(options.wasmUrl);
-    return new BrowserXgecuWebUSB(wasm, options.usb ?? requireWebUSB());
+    return new BrowserXgecuWebUSB(wasm, options.usb ?? requireWebUSB(), options.algorithmProvider);
   }));
 }
 
@@ -355,9 +381,11 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
       }
       state.openedByLibrary = false;
       state.sessionEstablished = false;
+      state.detectedProgrammer = undefined;
     }
     if (!device.opened) {
       state.claimed = false;
+      state.detectedProgrammer = undefined;
       await lifecycle("open USB device", () => device.open());
       state.openedByLibrary = true;
       openedHere = true;
@@ -392,11 +420,15 @@ async function ensureEndpointAlternate(device: USBDeviceLike): Promise<void> {
   if (!interfaces) return;
   const usbInterface = interfaces.find((entry) => entry.interfaceNumber === INTERFACE_NUMBER);
   if (!usbInterface) throw new XgecuWebUSBError("USB configuration 1 does not expose interface 0.", "WebUSBLifecycleFailed");
-  if (hasProgrammerEndpoints(usbInterface.alternate)) return;
-  const alternate = usbInterface.alternates.find(hasProgrammerEndpoints) ??
-    (hasCommandEndpoints(usbInterface.alternate) ? usbInterface.alternate : usbInterface.alternates.find(hasCommandEndpoints));
+  const hasRequiredEndpoints = (alternate: Parameters<typeof hasProgrammerEndpoints>[0]) =>
+    hasProgrammerEndpoints(alternate, device.productId);
+  if (hasRequiredEndpoints(usbInterface.alternate)) return;
+  const alternate = usbInterface.alternates.find(hasRequiredEndpoints) ??
+    (device.productId === T48_T56_PRODUCT_ID
+      ? usbInterface.alternates.find(hasCommandEndpoints)
+      : undefined);
   if (!alternate) {
-    throw new XgecuWebUSBError("USB interface 0 does not expose command endpoint 1 in both directions.", "WebUSBLifecycleFailed");
+    throw new XgecuWebUSBError("USB interface 0 does not expose the required bulk endpoints for this programmer.", "WebUSBLifecycleFailed");
   }
   if (alternate === usbInterface.alternate) return;
   if (!device.selectAlternateInterface) {
@@ -405,17 +437,21 @@ async function ensureEndpointAlternate(device: USBDeviceLike): Promise<void> {
   await lifecycle("select USB interface 0 alternate", () => device.selectAlternateInterface!(INTERFACE_NUMBER, alternate.alternateSetting));
 }
 
-function hasProgrammerEndpoints(alternate: { readonly endpoints: readonly { readonly endpointNumber: number; readonly direction: "in" | "out"; readonly type: string }[] }): boolean {
-  return [1, 2].every((endpointNumber) =>
-    ["in", "out"].every((direction) => alternate.endpoints.some((endpoint) =>
-      endpoint.endpointNumber === endpointNumber && endpoint.direction === direction && endpoint.type === "bulk"
-    ))
-  );
-}
-
-function hasCommandEndpoints(alternate: { readonly endpoints: readonly { readonly endpointNumber: number; readonly direction: "in" | "out"; readonly type: string }[] }): boolean {
+function hasCommandEndpoints(alternate: Parameters<typeof hasProgrammerEndpoints>[0]): boolean {
   return ["in", "out"].every((direction) => alternate.endpoints.some((endpoint) =>
     endpoint.endpointNumber === 1 && endpoint.direction === direction && endpoint.type === "bulk"
+  ));
+}
+
+function hasProgrammerEndpoints(
+  alternate: { readonly endpoints: readonly { readonly endpointNumber: number; readonly direction: "in" | "out"; readonly type: string }[] },
+  productId: number
+): boolean {
+  const required = productId === T76_PRODUCT_ID
+    ? [[1, "in"], [1, "out"], [2, "in"], [5, "out"]] as const
+    : [[1, "in"], [1, "out"], [2, "in"], [2, "out"]] as const;
+  return required.every(([endpointNumber, direction]) => alternate.endpoints.some((endpoint) =>
+    endpoint.endpointNumber === endpointNumber && endpoint.direction === direction && endpoint.type === "bulk"
   ));
 }
 
@@ -438,7 +474,8 @@ function requireWebUSB(): USBNavigatorLike {
 }
 
 function isSupportedUsbId(device: Pick<USBDeviceLike, "vendorId" | "productId">): boolean {
-  return device.vendorId === XGECU_VENDOR_ID && device.productId === XGECU_PRODUCT_ID;
+  return device.vendorId === XGECU_VENDOR_ID &&
+    (device.productId === T48_T56_PRODUCT_ID || device.productId === T76_PRODUCT_ID);
 }
 
 function deviceInfo(device: USBDeviceLike): ProgrammerInfo {
@@ -489,6 +526,54 @@ function memorySize(device: DeviceDetail, memory: NonNullable<WriteROMOptions["m
   }
 }
 
+async function loadAlgorithms(
+  provider: AlgorithmProvider | undefined,
+  device: DeviceDetail,
+  requiredProgrammer: AlgorithmRequirement["programmer"] | undefined
+): Promise<{ t56Algorithm?: Uint8Array; t76Algorithm?: Uint8Array }> {
+  if (!requiredProgrammer) return {};
+  if (!provider) {
+    throw new XgecuWebUSBError(
+      `A local algorithm provider is required for ${requiredProgrammer.toUpperCase()} operations.`,
+      "AlgorithmUnavailable"
+    );
+  }
+
+  const payloads: { t56Algorithm?: Uint8Array; t76Algorithm?: Uint8Array } = {};
+  const requirement = device.algorithms.find((entry) => entry.programmer === requiredProgrammer);
+  if (!requirement) {
+    throw new XgecuWebUSBError(`The catalog does not define a ${requiredProgrammer.toUpperCase()} algorithm for this device.`, "AlgorithmUnavailable");
+  }
+  const bytes = await provider(requirement);
+  if (!(bytes instanceof Uint8Array)) {
+    throw new XgecuWebUSBError("The algorithm provider must return a Uint8Array.", "InvalidAlgorithm");
+  }
+  if (requiredProgrammer === "t56") payloads.t56Algorithm = bytes.slice();
+  else payloads.t76Algorithm = bytes.slice();
+  return payloads;
+}
+
+async function programmerForAlgorithms(
+  wasm: WasmBridge,
+  device: USBDeviceLike,
+  requestedProgrammer: NonNullable<ReadROMOptions["programmerKind"]>,
+  provider: AlgorithmProvider | undefined
+): Promise<AlgorithmRequirement["programmer"] | undefined> {
+  if (requestedProgrammer === "t56" || requestedProgrammer === "t76") return requestedProgrammer;
+  if (requestedProgrammer === "t48") return undefined;
+  if (device.productId === T76_PRODUCT_ID) return "t76";
+  if (!provider) return undefined;
+
+  const state = stateFor(device);
+  const detected = state.detectedProgrammer ??
+    await wasm.identifyProgrammer((transfer) => performWebUSBTransfer(device, transfer));
+  if (detected !== "t48" && detected !== "t56") {
+    throw new XgecuWebUSBError("The shared T48/T56 USB identity returned an unexpected programmer model.", "ProgrammerMismatch");
+  }
+  state.detectedProgrammer = detected;
+  return detected === "t56" ? "t56" : undefined;
+}
+
 async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Promise<T>): Promise<T> {
   const state = stateFor(device);
   if (state.operations !== 0) {
@@ -506,7 +591,9 @@ async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Pro
 }
 
 function markProgrammerPoisoned(device: USBDeviceLike): void {
-  stateFor(device).poisoned = true;
+  const state = stateFor(device);
+  state.poisoned = true;
+  state.detectedProgrammer = undefined;
 }
 
 async function quarantineProgrammer(device: USBDeviceLike, state: DeviceState): Promise<void> {
@@ -515,6 +602,7 @@ async function quarantineProgrammer(device: USBDeviceLike, state: DeviceState): 
   state.claimed = false;
   if (!device.opened) state.openedByLibrary = false;
   state.sessionEstablished = false;
+  state.detectedProgrammer = undefined;
 }
 
 function validateConnection(programmer: ProgrammerConnection): void {
@@ -522,7 +610,7 @@ function validateConnection(programmer: ProgrammerConnection): void {
     throw new XgecuWebUSBError("Use WebUSBProgrammerConnection or a connection returned by the programmer API.", "WebUSBLifecycleFailed");
   }
   if (!isSupportedUsbId(programmer.device)) {
-    throw new XgecuWebUSBError("USB device is not a supported T48/T56 programmer.", "UnsupportedProgrammer");
+    throw new XgecuWebUSBError("USB device is not a supported T48/T56/T76 programmer.", "UnsupportedProgrammer");
   }
   if (programmer.isClosed) {
     throw new XgecuWebUSBError("The programmer connection is closed.", "WebUSBLifecycleFailed");
@@ -534,14 +622,14 @@ function validateDeviceName(device: unknown): asserts device is string {
 }
 
 function validateReadOptions(options: ReadROMOptions): void {
-  validateEnum(options.programmerKind, ["auto", "t48", "t56"], "programmerKind");
+  validateEnum(options.programmerKind, ["auto", "t48", "t56", "t76"], "programmerKind");
   validateEnum(options.memory, ["code", "data", "user"], "memory");
   validateBooleans(options, ["skipIdCheck", "continueOnIdMismatch"]);
 }
 
 function validateWriteOptions(options: WriteROMOptions): void {
   if (!(options.data instanceof Uint8Array)) invalidInput("data must be a Uint8Array");
-  validateEnum(options.programmerKind, ["auto", "t48", "t56"], "programmerKind");
+  validateEnum(options.programmerKind, ["auto", "t48", "t56", "t76"], "programmerKind");
   validateEnum(options.memory, ["code", "data", "user"], "memory");
   validateBooleans(options, ["erase", "verify", "skipIdCheck", "continueOnIdMismatch", "unprotectBefore", "protectAfter"]);
   validateByte(options.eraseNumFuses, "eraseNumFuses");

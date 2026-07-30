@@ -6,13 +6,15 @@ pub const Programmer = enum {
     auto,
     t48,
     t56,
+    t76,
 
-    pub const supported = [_]Programmer{ .t48, .t56 };
+    pub const supported = [_]Programmer{ .t48, .t56, .t76 };
 
     pub fn parse(text: []const u8) ?Programmer {
         if (std.ascii.eqlIgnoreCase(text, "auto")) return .auto;
         if (std.ascii.eqlIgnoreCase(text, "t48")) return .t48;
         if (std.ascii.eqlIgnoreCase(text, "t56")) return .t56;
+        if (std.ascii.eqlIgnoreCase(text, "t76")) return .t76;
         return null;
     }
 
@@ -21,6 +23,7 @@ pub const Programmer = enum {
             .auto => "auto",
             .t48 => "t48",
             .t56 => "t56",
+            .t76 => "t76",
         };
     }
 
@@ -29,6 +32,7 @@ pub const Programmer = enum {
             .auto => "auto",
             .t48 => "T48",
             .t56 => "T56",
+            .t76 => "T76",
         };
     }
 };

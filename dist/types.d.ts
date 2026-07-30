@@ -1,9 +1,9 @@
-export type ProgrammerKind = "auto" | "t48" | "t56";
+export type ProgrammerKind = "auto" | "t48" | "t56" | "t76";
 export type MemoryKind = "code" | "data" | "user";
 export type ChipType = "memory" | "mcu" | "pld" | "sram" | "logic" | "nand" | "emmc" | "vga";
 export interface DeviceSummary {
     name: string;
-    aliases: string[];
+    aliases: readonly string[];
     chipType: ChipType;
     codeMemorySize: number;
     dataMemorySize: number;
@@ -23,8 +23,21 @@ export interface DeviceSummary {
     supportsPinCheck: boolean;
     supportsT48: boolean;
     supportsT56: boolean;
+    supportsT76: boolean;
+    algorithms: readonly AlgorithmRequirement[];
 }
 export type DeviceDetail = DeviceSummary;
+export interface AlgorithmRequirement {
+    programmer: "t56" | "t76";
+    name: string;
+    size: number;
+    sha256: string;
+}
+/**
+ * Supplies a locally obtained algorithm payload. Xgecu Web never downloads or
+ * redistributes vendor algorithm bytes.
+ */
+export type AlgorithmProvider = (requirement: AlgorithmRequirement) => Promise<Uint8Array>;
 export interface DeviceListQuery {
     search?: string;
     programmer?: ProgrammerKind;
@@ -64,6 +77,10 @@ export interface WriteROMOptions {
     verify?: boolean;
     skipIdCheck?: boolean;
     continueOnIdMismatch?: boolean;
+    /**
+     * Requests generic pre-write unprotection. T76 targets whose catalog flags
+     * require unprotection are always unprotected before erase and restarted.
+     */
     unprotectBefore?: boolean;
     protectAfter?: boolean;
     signal?: AbortSignal;

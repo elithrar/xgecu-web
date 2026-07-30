@@ -9,9 +9,10 @@ export interface WasmExports {
     mp_last_error_len(): number;
     mp_device_list(queryPtr: number, queryLen: number, programmer: number, limit: number): number;
     mp_device_detail(devicePtr: number, deviceLen: number, programmer: number): number;
+    mp_programmer_from_system_info(dataPtr: number, dataLen: number): number;
     mp_start_pin_check(programmer: number, devicePtr: number, deviceLen: number): number;
-    mp_start_read_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, skipIdCheck: number, continueOnIdMismatch: number): number;
-    mp_start_write_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, dataPtr: number, dataLen: number, erase: number, eraseNumFuses: number, erasePld: number, verify: number, skipIdCheck: number, continueOnIdMismatch: number, unprotectBefore: number, protectAfter: number): number;
+    mp_start_read_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, skipIdCheck: number, continueOnIdMismatch: number, t56AlgorithmPtr: number, t56AlgorithmLen: number, t76AlgorithmPtr: number, t76AlgorithmLen: number): number;
+    mp_start_write_rom(programmer: number, devicePtr: number, deviceLen: number, memory: number, dataPtr: number, dataLen: number, erase: number, eraseNumFuses: number, erasePld: number, verify: number, skipIdCheck: number, continueOnIdMismatch: number, unprotectBefore: number, protectAfter: number, t56AlgorithmPtr: number, t56AlgorithmLen: number, t76AlgorithmPtr: number, t76AlgorithmLen: number): number;
     mp_operation_next(handle: number): number;
     mp_transfer_endpoint(handle: number): number;
     mp_transfer_ptr(handle: number): number;
@@ -55,12 +56,16 @@ export declare class WasmBridge {
     static load(wasmUrl?: string | URL): Promise<WasmBridge>;
     deviceList(query?: DeviceListQuery): DeviceSummary[];
     resolveDevice(name: string, programmer?: ProgrammerKind): DeviceDetail | null;
+    programmerFromSystemInfo(data: Uint8Array): Exclude<ProgrammerKind, "auto">;
+    identifyProgrammer(performTransfer: UsbTransferHandler): Promise<Exclude<ProgrammerKind, "auto">>;
     startReadROM(options: {
         programmer: ProgrammerKind;
         device: string;
         memory: MemoryKind;
         skipIdCheck: boolean;
         continueOnIdMismatch: boolean;
+        t56Algorithm?: Uint8Array;
+        t76Algorithm?: Uint8Array;
     }): WasmOperationHandle;
     startPinCheck(options: {
         programmer: "auto" | "t48";
@@ -79,6 +84,8 @@ export declare class WasmBridge {
         continueOnIdMismatch: boolean;
         unprotectBefore: boolean;
         protectAfter: boolean;
+        t56Algorithm?: Uint8Array;
+        t76Algorithm?: Uint8Array;
     }): WasmOperationHandle;
     disposeOperation(handle: WasmOperationHandle): void;
     runOperation(handle: WasmOperationHandle, performTransfer: UsbTransferHandler, options?: RunOperationOptions): Promise<Uint8Array>;

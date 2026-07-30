@@ -59,15 +59,13 @@ function generate(catalog) {
       writeByteArray(out, `${name}_pin_check_gnd_pins`, Buffer.from(device.pinCheck.gndPins));
       writeByteArray(out, `${name}_pin_check_mask`, Buffer.from(device.pinCheck.mask));
     }
-    if (device.t56AlgorithmHex || device.t56AlgorithmBase64) {
-      writeByteArray(out, `${name}_t56_algorithm`, decodeAlgorithm(device));
-    }
     out.push("");
     return { name, device };
   });
 
   out.push("pub const devices = [_]schema.DeviceRecord{");
   for (const { name, device } of records) {
+    out.push(`    // Selection rationale: ${device.selectionRationale}`);
     out.push("    .{");
     field(out, "canonical_name", zigString(device.canonicalName));
     field(out, "aliases", `&${name}_aliases`);
@@ -95,7 +93,8 @@ function generate(catalog) {
     if (device.chipId != null) field(out, "chip_id", zigNumber(device.chipId));
     if (device.chipIdBytesCount != null) field(out, "chip_id_bytes_count", zigNumber(device.chipIdBytesCount));
     if (device.blankValue != null) field(out, "blank_value", zigNumber(device.blankValue));
-    if (device.t56AlgorithmHex || device.t56AlgorithmBase64) field(out, "t56_algorithm", `&${name}_t56_algorithm`);
+    if (device.t56Algorithm) field(out, "t56_algorithm", algorithmLiteral(device.t56Algorithm));
+    if (device.t76Algorithm) field(out, "t76_algorithm", algorithmLiteral(device.t76Algorithm));
     out.push("    },");
   }
   out.push("};");
@@ -106,6 +105,10 @@ function generate(catalog) {
 function validateDevice(device, index) {
   const label = `devices[${index}]`;
   requiredString(device, "canonicalName", label);
+  requiredString(device, "selectionRationale", label);
+  if (/[\r\n]/u.test(device.selectionRationale) || device.selectionRationale.length > 240) {
+    throw new Error(`${label}.selectionRationale must be a single line no longer than 240 characters`);
+  }
   requiredArray(device, "aliases", label);
   requiredArray(device, "programmers", label);
   requiredString(device, "chipType", label);
@@ -133,15 +136,14 @@ function validateDevice(device, index) {
     parseNumber(device[key], `${label}.${key}`);
   }
   for (const programmer of device.programmers) {
-    if (programmer !== "t48" && programmer !== "t56") throw new Error(`${label}.programmers contains unsupported programmer ${programmer}`);
+    if (programmer !== "t48" && programmer !== "t56" && programmer !== "t76") throw new Error(`${label}.programmers contains unsupported programmer ${programmer}`);
   }
-  if (device.programmers.includes("t56") && !device.t56AlgorithmHex && !device.t56AlgorithmBase64) {
-    throw new Error(`${label}.programmers includes t56 but no T56 algorithm payload is present`);
-  }
+  if (device.programmers.includes("t56") !== Boolean(device.t56Algorithm)) throw new Error(`${label}.t56Algorithm must exactly match T56 support`);
+  if (device.programmers.includes("t76") !== Boolean(device.t76Algorithm)) throw new Error(`${label}.t76Algorithm must exactly match T76 support`);
   if (device.pinCheck) validatePinCheck(device.pinCheck, device, label);
-  if (device.t56AlgorithmHex && device.t56AlgorithmBase64) {
-    throw new Error(`${label} must use only one T56 algorithm encoding`);
-  }
+  if (device.t56Algorithm) validateAlgorithm(device.t56Algorithm, `${label}.t56Algorithm`);
+  if (device.t76Algorithm) validateAlgorithm(device.t76Algorithm, `${label}.t76Algorithm`);
+  validateAlgorithmSelection(device, label);
   numberInRange(device.protocolId, `${label}.protocolId`, 0xff);
   numberInRange(device.readBufferSize, `${label}.readBufferSize`, 0xffff, 1);
   numberInRange(device.writeBufferSize, `${label}.writeBufferSize`, 0xffff, 1);
@@ -161,6 +163,28 @@ function validateDevice(device, index) {
   if (device.canErase !== ((flags & 0x10) !== 0)) {
     throw new Error(`${label}.canErase must match flagsRaw erase support`);
   }
+}
+
+function validateAlgorithmSelection(device, label) {
+  if (!device.t56Algorithm && !device.t76Algorithm) return;
+
+  if (parseNumber(device.protocolId, `${label}.protocolId`) !== 0x07) return;
+  const variant = parseNumber(device.variant, `${label}.variant`);
+  const expected = `ROM28P${((variant >>> 8) & 0xff).toString(16).toUpperCase().padStart(2, "0")}`;
+  for (const algorithm of [device.t56Algorithm, device.t76Algorithm]) {
+    if (algorithm && algorithm.name !== expected) {
+      throw new Error(`${label} protocol 0x07 variant requires algorithm ${expected}`);
+    }
+  }
+}
+
+function validateAlgorithm(algorithm, label) {
+  if (!algorithm || typeof algorithm !== "object") throw new Error(`${label} must be an object`);
+  requiredString(algorithm, "name", label);
+  if (!/^[A-Z0-9_]+$/u.test(algorithm.name)) throw new Error(`${label}.name contains unsupported characters`);
+  numberInRange(algorithm.size, `${label}.size`, 0xffff_ffff, 1);
+  requiredString(algorithm, "sha256", label);
+  if (!/^[0-9a-f]{64}$/u.test(algorithm.sha256)) throw new Error(`${label}.sha256 must be lowercase SHA-256 hex`);
 }
 
 function validatePinCheck(pinCheck, device, label) {
@@ -244,13 +268,10 @@ function writeByteArray(out, name, bytes) {
   out.push("};");
 }
 
-function decodeAlgorithm(device) {
-  if (device.t56AlgorithmHex) {
-    const normalized = device.t56AlgorithmHex.replace(/\s+/gu, "");
-    if (normalized.length % 2 !== 0 || /[^0-9a-f]/iu.test(normalized)) throw new Error(`${device.canonicalName} has invalid t56AlgorithmHex`);
-    return Buffer.from(normalized, "hex");
-  }
-  return Buffer.from(device.t56AlgorithmBase64, "base64");
+function algorithmLiteral(algorithm) {
+  const digest = Buffer.from(algorithm.sha256, "hex");
+  const bytes = Array.from(digest, (byte) => `0x${byte.toString(16).padStart(2, "0")}`).join(", ");
+  return `.{ .name = ${zigString(algorithm.name)}, .size = ${zigNumber(algorithm.size)}, .sha256 = .{ ${bytes} } }`;
 }
 
 function field(out, key, value) {

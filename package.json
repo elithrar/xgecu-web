@@ -1,7 +1,7 @@
 {
   "name": "xgecu-web",
   "version": "0.1.0",
-  "description": "Browser WebUSB API for programming ROMs with XGecu T48/T56 programmers.",
+  "description": "Browser WebUSB API for programming ROMs with XGecu T48/T56/T76 programmers.",
   "type": "module",
   "license": "Apache-2.0",
   "packageManager": "pnpm@9.15.4",

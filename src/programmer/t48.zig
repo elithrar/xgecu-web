@@ -4,6 +4,7 @@ const std = @import("std");
 const endian = @import("../core/endian.zig");
 const logic = @import("../core/logic.zig");
 const model = @import("../core/model.zig");
+const capabilities = @import("capabilities.zig");
 const protocol_bytes = @import("protocol_bytes.zig");
 const transport = @import("transport.zig");
 
@@ -60,13 +61,7 @@ pub fn deviceFromProtocolInfo(info: anytype, icsp: u8, spi_clock: u8) Device {
     };
 }
 
-pub const Status = struct {
-    error_code: u8,
-    address: u32,
-    c1: u16,
-    c2: u16,
-    overcurrent: u8,
-};
+pub const Status = capabilities.Status;
 
 pub const ChipId = struct {
     id_type: u8,
@@ -127,7 +122,7 @@ pub fn beginTransaction(trans: transport.Transport, device: Device) Error!void {
     var msg: [packet.begin_len]u8 = undefined;
     writeBeginPacket(&msg, .t48, device);
 
-    errdefer endTransaction(trans) catch {};
+    errdefer trans.quarantineOnCleanupFailure(endTransaction(trans));
     try trans.send(&msg);
     const status = try requestStatus(trans);
     if (status.overcurrent != 0) return Error.Overcurrent;
@@ -178,7 +173,7 @@ pub fn checkPinContacts(trans: transport.Transport, gnd_pins: []const u8) Error!
 
     try resetPinDrivers(trans);
     var reset_needed = true;
-    defer if (reset_needed) resetPinDrivers(trans) catch {};
+    defer if (reset_needed) trans.quarantineOnCleanupFailure(resetPinDrivers(trans));
 
     try setInputPulldowns(trans);
     for (gnd_pins) |pin| try setPinOutput(trans, pin, true);
@@ -333,11 +328,7 @@ pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
     try trans.send(&msg);
     var response = [_]u8{0} ** packet.erase_response_len;
     const received = try trans.recv(&response);
-    // T48 returns an opaque short acknowledgement; status is checked after restart.
-    if (received == packet.t48_erase_ack_len) return;
-    if (received < 13) return transport.Error.Io;
-    if (response[12] != 0) return Error.Overcurrent;
-    if (response[0] != 0) return Error.ProgrammerStatusError;
+    try checkResponseValidation(capabilities.validateEraseResponse(.t48, response[0..received]));
 }
 
 pub fn protectOff(trans: transport.Transport) Error!void {
@@ -358,13 +349,15 @@ pub fn requestStatus(trans: transport.Transport) Error!Status {
     try trans.send(msg[0..packet.short_command_len]);
     @memset(&msg, 0);
     const received = try trans.recv(&msg);
-    if (received < 13) return transport.Error.Io;
-    return .{
-        .error_code = msg[0],
-        .address = @intCast(endian.loadInt(msg[8..12], .little)),
-        .c1 = @intCast(endian.loadInt(msg[2..4], .little)),
-        .c2 = @intCast(endian.loadInt(msg[4..6], .little)),
-        .overcurrent = msg[12],
+    return capabilities.parseStatus(msg[0..received]) orelse transport.Error.Io;
+}
+
+fn checkResponseValidation(validation: capabilities.ResponseValidation) Error!void {
+    return switch (validation) {
+        .ok => {},
+        .short => transport.Error.Io,
+        .overcurrent => Error.Overcurrent,
+        .programmer_status_error => Error.ProgrammerStatusError,
     };
 }
 
@@ -456,6 +449,17 @@ test "begin transaction sends expected T48 packet fields" {
     try std.testing.expectEqual(@as(u64, 0x1c000000), endian.loadInt(begin[40..44], .little));
     try std.testing.expectEqual(@as(u64, 512), endian.loadInt(begin[44..46], .little));
     try std.testing.expectEqual(@as(u8, command.request_status), fake.sent.items[64]);
+}
+
+test "T48 transaction cleanup failure quarantines transport" {
+    var response = [_]u8{0} ** packet.status_len;
+    response[0] = 1;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    fake.short_send_call = 3;
+    defer fake.deinit();
+
+    try std.testing.expectError(Error.ProgrammerStatusError, beginTransaction(fake.transport(), testDevice()));
+    try std.testing.expectEqual(@as(usize, 1), fake.close_count);
 }
 
 test "begin packet encoder preserves T48 and T56 clock layout differences" {

@@ -10,7 +10,9 @@ export type XgecuErrorCode =
   | "Overcurrent"
   | "ProgrammerStatusError"
   | "VerifyFailed"
+  | "VerifyRequired"
   | "AlgorithmUnavailable"
+  | "InvalidAlgorithm"
   | "PayloadBufferTooSmall"
   | "EmptyMemoryRegion"
   | "InputTooLarge"
@@ -88,6 +90,10 @@ export function xgecuErrorCodeFromAbi(code: number): XgecuErrorCode {
       return "PinCheckUnavailable";
     case 27:
       return "ProtectionUnsupported";
+    case 28:
+      return "InvalidAlgorithm";
+    case 29:
+      return "VerifyRequired";
     default:
       return "Unknown";
   }

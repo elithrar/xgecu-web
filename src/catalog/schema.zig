@@ -9,6 +9,12 @@ pub const PinCheck = struct {
     mask: []const u8,
 };
 
+pub const AlgorithmRequirement = struct {
+    name: []const u8,
+    size: u32,
+    sha256: [32]u8,
+};
+
 pub const DeviceRecord = struct {
     canonical_name: []const u8,
     aliases: []const []const u8,
@@ -34,20 +40,23 @@ pub const DeviceRecord = struct {
     chip_id: u32 = 0,
     chip_id_bytes_count: u8 = 0,
     blank_value: u8 = 0xff,
-    t56_algorithm: ?[]const u8 = null,
+    t56_algorithm: ?AlgorithmRequirement = null,
+    t76_algorithm: ?AlgorithmRequirement = null,
 
     pub fn supports(self: DeviceRecord, programmer: model.Programmer) bool {
         if (programmer == .auto) return true;
         if (programmer == .t56 and self.t56_algorithm == null) return false;
+        if (programmer == .t76 and self.t76_algorithm == null) return false;
         for (self.programmers) |entry| {
             if (entry == programmer) return true;
         }
         return false;
     }
 
-    pub fn algorithmFor(self: DeviceRecord, programmer: model.Programmer) ?[]const u8 {
+    pub fn algorithmFor(self: DeviceRecord, programmer: model.Programmer) ?AlgorithmRequirement {
         return switch (programmer) {
             .t56 => self.t56_algorithm,
+            .t76 => self.t76_algorithm,
             else => null,
         };
     }
@@ -78,4 +87,7 @@ pub const DeviceSummary = struct {
     supports_pin_check: bool,
     supports_t48: bool,
     supports_t56: bool,
+    supports_t76: bool,
+    t56_algorithm: ?AlgorithmRequirement,
+    t76_algorithm: ?AlgorithmRequirement,
 };

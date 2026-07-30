@@ -1,4 +1,5 @@
 export { XgecuWebUSBError, WebUSBTransferError, WebUSBUnavailableError } from "./errors";
+export { createAlgorithmXmlProvider } from "./algorithm-xml";
 export { WasmBridge } from "./wasm";
 export {
   BrowserXgecuWebUSB,
@@ -9,6 +10,8 @@ export {
 export type { XgecuErrorCode } from "./errors";
 export type { UsbTransfer, UsbTransferHandler, RunOperationOptions, WasmOperationHandle } from "./wasm";
 export type {
+  AlgorithmProvider,
+  AlgorithmRequirement,
   ChipType,
   DeviceDetail,
   DeviceListQuery,

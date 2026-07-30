@@ -11,7 +11,7 @@ High-level API methods return plain values and throw package-owned `XgecuWebUSBE
 ## Core types
 
 ```ts
-type ProgrammerKind = "auto" | "t48" | "t56";
+type ProgrammerKind = "auto" | "t48" | "t56" | "t76";
 type MemoryKind = "code" | "data" | "user";
 
 interface DeviceSummary {
@@ -32,6 +32,13 @@ interface DeviceSummary {
   supportsPinCheck: boolean;
   supportsT48: boolean;
   supportsT56: boolean;
+  supportsT76: boolean;
+  algorithms: readonly {
+    programmer: "t56" | "t76";
+    name: string;
+    size: number;
+    sha256: string;
+  }[];
 }
 ```
 
@@ -70,7 +77,7 @@ try {
 }
 ```
 
-Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `TargetNotBlank`, `PinCheckUnavailable`, `ProtectionUnsupported`, `AlgorithmUnavailable`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
+Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecycleFailed`, `UnsupportedProgrammer`, `ProgrammerMismatch`, `ProgrammerInBootloader`, `DeviceNotFound`, `ChipIdMismatch`, `Overcurrent`, `ProgrammerStatusError`, `VerifyFailed`, `TargetNotBlank`, `PinCheckUnavailable`, `ProtectionUnsupported`, `AlgorithmUnavailable`, `InvalidAlgorithm`, `InputTooLarge`, `InvalidInput`, `EmptyMemoryRegion`, `OperationInProgress`, `OperationAborted`, and `ShortRead`.
 
 ## `createProgrammer(options?)`
 
@@ -97,18 +104,32 @@ Use `usb` to inject a WebUSB-compatible object in tests:
 const api = await createProgrammer({ usb: fakeUsb });
 ```
 
+T56 and T76 operations require an `AlgorithmProvider`. The package helper reads a user-selected local `algorithm.xml`; it does not upload the file or persist vendor payloads:
+
+```ts
+import { createAlgorithmXmlProvider, createProgrammer } from "xgecu-web";
+
+const xml = await algorithmXmlFile.text();
+const api = await createProgrammer({
+  algorithmProvider: createAlgorithmXmlProvider(xml)
+});
+```
+
+The provider and Wasm core both validate the decoded payload against the catalog requirement. Missing data throws `AlgorithmUnavailable`; a CRC, size, or SHA-256 mismatch throws `InvalidAlgorithm`.
+
 ## `deviceList(query?)`
 
-Returns target ROM/device metadata from the generated embedded T48/T56 catalog. The source metadata lives in `data/catalog.json`; `pnpm run generate:catalog` writes `src/catalog/generated.zig`.
+Returns target ROM/device metadata from the generated embedded T48/T56/T76 catalog. The source metadata lives in `data/catalog.json`; `pnpm run generate:catalog` writes `src/catalog/generated.zig`.
 
 ```ts
 const devices = api.deviceList({ search: "AT28", programmer: "t48", limit: 20 });
 ```
 
-T56 results are listed only for catalog records that include a generated T56 algorithm payload.
+T56 and T76 results are listed only when the record includes the corresponding pinned algorithm requirement.
 
 ```ts
 const t56Devices = api.deviceList({ programmer: "t56", limit: 20 });
+const t76Devices = api.deviceList({ programmer: "t76", limit: 20 });
 ```
 
 `search` defaults to an empty string, `programmer` defaults to `"auto"`, and `limit` defaults to `100`.
@@ -263,12 +284,12 @@ await api.writeROM({
 });
 ```
 
-`erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`. After an electrical erase, the operation reads the full selected memory region and rejects the write unless every byte equals `blankValue`.
+`erase` and `verify` default to `true`. T76 writes require `verify: true` because that streaming protocol has no per-block status response; explicitly disabling it throws `VerifyRequired` after programmer identification and before BEGIN. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`. After an electrical erase, the operation reads the full selected memory region and rejects the write unless every byte equals `blankValue`.
 `DeviceSummary.canErase` reports whether the programmer can electrically erase the target. `writeROM` rejects erase requests when it is false. A UV EPROM must be externally erased and written with `erase: false`; immediately before programming, the operation reads the full selected memory region and throws `TargetNotBlank` unless every byte equals `blankValue`.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 `eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
 Hardware-affecting options are runtime-validated. Unknown enum values, non-boolean flags, and fuse/PLD values outside the integer range 0-255 throw `InvalidInput` before USB work begins.
-`DeviceSummary.supportsUnprotect` and `DeviceSummary.supportsProtect` report capabilities, not required policy. Unsupported requests throw `ProtectionUnsupported`. Keep both write options explicit because changing protection is hardware-affecting; do not infer prior state or automatically re-protect a chip after writing.
+`DeviceSummary.supportsUnprotect` and `DeviceSummary.supportsProtect` report catalogued capabilities. Unsupported requests throw `ProtectionUnsupported`. Keep `protectAfter` explicit because the library does not infer prior protection state or automatically re-protect a chip after writing. T76 is the exception for pre-write unprotection: targets carrying the sourced `off_protect_before` flag are always unprotected before erase and restarted in a fresh transaction because the T76 firmware can otherwise accept the write flow without programming the target.
 Only one programmer operation may be active per physical programmer; overlapping calls and connection closes throw `OperationInProgress`.
 
 For a complete backup-then-write browser flow, including image length checks, see `docs/examples.md`.
@@ -283,3 +304,4 @@ Most applications should use `createProgrammer()`. The package also exports:
 - Error classes: `XgecuWebUSBError`, `WebUSBUnavailableError`, and `WebUSBTransferError`.
 
 Wasm operation handles are single-use. `WasmBridge.runOperation()` rejects duplicate runners and always destroys its handle in a `finally` block. Call `disposeOperation()` for an operation that was started but will not be run. If transaction cleanup fails after an operation error, the high-level API closes and quarantines the programmer until an explicit reconnect.
+The native Zig `Transport` vtable reports the number of bytes transferred for command and payload I/O. Its public wrappers reject short sends, writes, and reads as `transport.Error.Io`, so adapters must not report success for a partial transfer.
