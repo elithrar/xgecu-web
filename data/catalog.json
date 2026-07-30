@@ -11,6 +11,7 @@
   "devices": [
     {
       "canonicalName": "AT28C64B@DIP28",
+      "selectionRationale": "This is the 8 KiB parallel EEPROM we use for Porsche Motronic DME development and our reference page-write and electrical-erase target.",
       "aliases": ["AT28C64B", "AT28C64B@DIP28", "AT28C64B-15PU"],
       "programmers": ["t48", "t56", "t76"],
       "chipType": "memory",
@@ -47,6 +48,7 @@
     },
     {
       "canonicalName": "AT28C256@DIP28",
+      "selectionRationale": "This 32 KiB parallel EEPROM extends our AT28 page-write and electrical-erase coverage beyond the Motronic-sized AT28C64B.",
       "aliases": ["AT28C256", "AT28C256@DIP28"],
       "programmers": ["t56", "t76"],
       "chipType": "memory",
@@ -79,6 +81,7 @@
     },
     {
       "canonicalName": "M27C64A@DIP28",
+      "selectionRationale": "This is the 8 KiB UV EPROM we use for Porsche Motronic DME work and our reference externally erased target.",
       "aliases": ["M27C64A", "M27C64A@DIP28"],
       "programmers": ["t48", "t56", "t76"],
       "chipType": "memory",
@@ -117,6 +120,7 @@
     },
     {
       "canonicalName": "AM27C64@DIP28",
+      "selectionRationale": "This common AMD 2764-class part adds manufacturer-specific 8 KiB EPROM coverage without aliasing it to the ST profile.",
       "aliases": ["AM27C64", "AM27C64@DIP28"],
       "programmers": ["t56", "t76"],
       "chipType": "memory",
@@ -151,6 +155,7 @@
     },
     {
       "canonicalName": "AM27C128@DIP28",
+      "selectionRationale": "This AMD part extends the same 28-pin UV EPROM family to 16 KiB and exercises the larger address space.",
       "aliases": ["AM27C128", "AM27C128@DIP28"],
       "programmers": ["t56", "t76"],
       "chipType": "memory",
@@ -185,6 +190,7 @@
     },
     {
       "canonicalName": "AM27C256@DIP28",
+      "selectionRationale": "This common AMD 32 KiB EPROM represents the ROM28P32 family for automotive and vintage-computing work.",
       "aliases": ["AM27C256", "AM27C256@DIP28"],
       "programmers": ["t56", "t76"],
       "chipType": "memory",
@@ -219,6 +225,7 @@
     },
     {
       "canonicalName": "M27C256B@DIP28",
+      "selectionRationale": "This ST 32 KiB counterpart remains separate from the AMD profile so device-ID and programming attributes are never assumed interchangeable.",
       "aliases": ["M27C256B", "M27C256B@DIP28"],
       "programmers": ["t56", "t76"],
       "chipType": "memory",
@@ -253,6 +260,7 @@
     },
     {
       "canonicalName": "AM27C512@DIP28",
+      "selectionRationale": "This common AMD 64 KiB EPROM represents the upper end of the requested 27C64-to-27C512 range.",
       "aliases": ["AM27C512", "AM27C512@DIP28"],
       "programmers": ["t56", "t76"],
       "chipType": "memory",
@@ -287,6 +295,7 @@
     },
     {
       "canonicalName": "M27C512@DIP28",
+      "selectionRationale": "This ST 64 KiB counterpart remains separate from the AMD profile to preserve manufacturer-specific identification and programming attributes.",
       "aliases": ["M27C512", "M27C512@DIP28"],
       "programmers": ["t56", "t76"],
       "chipType": "memory",
@@ -321,6 +330,7 @@
     },
     {
       "canonicalName": "AT27C512R@DIP28",
+      "selectionRationale": "This 64 KiB Atmel OTP EPROM adds a non-erasable, must-be-blank target to the safety matrix.",
       "aliases": ["AT27C512R", "AT27C512R@DIP28"],
       "programmers": ["t56", "t76"],
       "chipType": "memory",

@@ -65,6 +65,7 @@ function generate(catalog) {
 
   out.push("pub const devices = [_]schema.DeviceRecord{");
   for (const { name, device } of records) {
+    out.push(`    // Selection rationale: ${device.selectionRationale}`);
     out.push("    .{");
     field(out, "canonical_name", zigString(device.canonicalName));
     field(out, "aliases", `&${name}_aliases`);
@@ -104,6 +105,10 @@ function generate(catalog) {
 function validateDevice(device, index) {
   const label = `devices[${index}]`;
   requiredString(device, "canonicalName", label);
+  requiredString(device, "selectionRationale", label);
+  if (/[\r\n]/u.test(device.selectionRationale) || device.selectionRationale.length > 240) {
+    throw new Error(`${label}.selectionRationale must be a single line no longer than 240 characters`);
+  }
   requiredArray(device, "aliases", label);
   requiredArray(device, "programmers", label);
   requiredString(device, "chipType", label);
