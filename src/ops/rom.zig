@@ -422,11 +422,13 @@ fn protectOn(programmer: model.Programmer, trans: transport_mod.Transport) Error
 test "deviceList exposes catalog summaries" {
     const found = try deviceList(std.testing.allocator, "AT28", .t48, 5);
     defer std.testing.allocator.free(found);
-    try std.testing.expectEqual(@as(usize, 1), found.len);
+    try std.testing.expectEqual(@as(usize, 2), found.len);
     try std.testing.expectEqual(@as(u32, 8192), found[0].code_memory_size);
+    try std.testing.expectEqual(@as(u32, 32768), found[1].code_memory_size);
     try std.testing.expect(found[0].supports_unprotect);
     try std.testing.expect(found[0].supports_protect);
     try std.testing.expect(found[0].supports_pin_check);
+    try std.testing.expect(!found[1].supports_pin_check);
 }
 
 test "checkPinContacts reports T48 device pin numbers" {

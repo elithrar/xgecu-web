@@ -115,7 +115,7 @@ test "list exposes UV EPROM erase and ID metadata" {
     try std.testing.expectError(Error.DeviceNotFound, find("27C64", .t48));
 }
 
-test "automotive and vintage ROM profiles preserve sourced electrical attributes" {
+test "automotive and vintage ROM profiles preserve sourced electrical attributes and programmer support" {
     const Expected = struct {
         name: []const u8,
         variant: u32,
@@ -163,7 +163,16 @@ test "automotive and vintage ROM profiles preserve sourced electrical attributes
         try std.testing.expectEqualStrings(want.algorithm, device.algorithmFor(.t76).?.name);
         try std.testing.expect(device.supports(.t56));
         try std.testing.expect(device.supports(.t76));
+        try std.testing.expect(device.supports(.t48));
     }
     try std.testing.expectError(Error.DeviceNotFound, find("27C64", .t76));
     try std.testing.expectError(Error.DeviceNotFound, find("27C512", .t76));
+}
+
+test "empty T48 search exposes every sourced ROM profile" {
+    const found = try list(std.testing.allocator, "", .t48, devices.len);
+    defer std.testing.allocator.free(found);
+
+    try std.testing.expectEqual(devices.len, found.len);
+    for (found) |device| try std.testing.expect(device.supports_t48);
 }

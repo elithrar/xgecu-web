@@ -4,6 +4,26 @@ import { WasmBridge } from "../src/wasm";
 import type { UsbTransfer, WasmExports } from "../src/wasm";
 
 describe("WasmBridge", () => {
+  it("requests the full catalog for an empty device search", () => {
+    const fake = fakeExports();
+    fake.result = new TextEncoder().encode("[]");
+    const bridge = new WasmBridge(fake);
+
+    bridge.deviceList({ programmer: "t48", search: "" });
+
+    expect(fake.mp_device_list).toHaveBeenCalledWith(expect.any(Number), 0, 1, 0xffff_ffff);
+  });
+
+  it("keeps nonempty device searches bounded by default", () => {
+    const fake = fakeExports();
+    fake.result = new TextEncoder().encode("[]");
+    const bridge = new WasmBridge(fake);
+
+    bridge.deviceList({ programmer: "t48", search: "AT28" });
+
+    expect(fake.mp_device_list).toHaveBeenCalledWith(expect.any(Number), 4, 1, 100);
+  });
+
   it("maps the mandatory verification ABI error", () => {
     expect(xgecuErrorCodeFromAbi(29)).toBe("VerifyRequired");
   });
