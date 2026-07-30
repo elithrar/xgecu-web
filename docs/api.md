@@ -284,7 +284,7 @@ await api.writeROM({
 });
 ```
 
-`erase` and `verify` default to `true`. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`. After an electrical erase, the operation reads the full selected memory region and rejects the write unless every byte equals `blankValue`.
+`erase` and `verify` default to `true`. T76 writes require `verify: true` because that streaming protocol has no per-block status response; explicitly disabling it throws `VerifyRequired` after programmer identification and before BEGIN. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`. After an electrical erase, the operation reads the full selected memory region and rejects the write unless every byte equals `blankValue`.
 `DeviceSummary.canErase` reports whether the programmer can electrically erase the target. `writeROM` rejects erase requests when it is false. A UV EPROM must be externally erased and written with `erase: false`; immediately before programming, the operation reads the full selected memory region and throws `TargetNotBlank` unless every byte equals `blankValue`.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 `eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
@@ -304,3 +304,4 @@ Most applications should use `createProgrammer()`. The package also exports:
 - Error classes: `XgecuWebUSBError`, `WebUSBUnavailableError`, and `WebUSBTransferError`.
 
 Wasm operation handles are single-use. `WasmBridge.runOperation()` rejects duplicate runners and always destroys its handle in a `finally` block. Call `disposeOperation()` for an operation that was started but will not be run. If transaction cleanup fails after an operation error, the high-level API closes and quarantines the programmer until an explicit reconnect.
+The native Zig `Transport` vtable reports the number of bytes transferred for command and payload I/O. Its public wrappers reject short sends, writes, and reads as `transport.Error.Io`, so adapters must not report success for a partial transfer.

@@ -3,6 +3,7 @@
 const std = @import("std");
 const endian = @import("../core/endian.zig");
 const model = @import("../core/model.zig");
+const capabilities = @import("capabilities.zig");
 const protocol_bytes = @import("protocol_bytes.zig");
 const transport = @import("transport.zig");
 const t48 = @import("t48.zig");
@@ -69,14 +70,14 @@ pub fn resetFpga(trans: transport.Transport) Error!void {
 
 pub fn beginTransaction(trans: transport.Transport, device: Device, bitstream: []const u8) Error!void {
     try uploadBitstream(trans, bitstream);
-    errdefer resetFpga(trans) catch {};
+    errdefer trans.quarantineOnCleanupFailure(resetFpga(trans));
     try beginLoadedTransaction(trans, device);
 }
 
 pub fn beginLoadedTransaction(trans: transport.Transport, device: Device) Error!void {
     var msg: [packet.begin_len]u8 = undefined;
     writeBeginPacket(&msg, device);
-    errdefer endTransaction(trans) catch {};
+    errdefer trans.quarantineOnCleanupFailure(endTransaction(trans));
     try trans.send(&msg);
     const status = try requestStatus(trans);
     if (status.overcurrent != 0) return error.Overcurrent;
@@ -146,6 +147,8 @@ pub fn writeCodeBlock(
     endian.storeInt(header[2..4], data.len, .little);
     endian.storeInt(header[4..8], address, .little);
     endian.storeInt(header[12..16], data.len, .little);
+    const frame = try allocator.alloc(u8, header.len + data.len);
+    defer allocator.free(frame);
     if (address == 0) {
         const block_count = (operation_size + device.write_buffer_size - 1) / device.write_buffer_size;
         endian.storeInt(header[8..12], block_count, .little);
@@ -153,8 +156,6 @@ pub fn writeCodeBlock(
         @memset(header[8..12], 0);
     }
 
-    const frame = try allocator.alloc(u8, header.len + data.len);
-    defer allocator.free(frame);
     @memcpy(frame[0..header.len], &header);
     @memcpy(frame[header.len..], data);
     try trans.writePayload(frame, 0);
@@ -184,9 +185,7 @@ pub fn erase(trans: transport.Transport, num_fuses: u8, pld: u8) Error!void {
     try trans.send(&msg);
     var response = [_]u8{0} ** packet.erase_response_len;
     const received = try trans.recv(&response);
-    if (received < response.len) return transport.Error.Io;
-    if (response[12] != 0) return error.Overcurrent;
-    if (response[0] != 0) return error.ProgrammerStatusError;
+    try checkResponseValidation(capabilities.validateEraseResponse(.t76, response[0..received]));
 }
 
 pub fn protectOff(trans: transport.Transport) Error!void {
@@ -207,13 +206,15 @@ pub fn requestStatus(trans: transport.Transport) Error!Status {
     try trans.send(&request);
     var response = [_]u8{0} ** packet.status_len;
     const received = try trans.recv(&response);
-    if (received < 13) return transport.Error.Io;
-    return .{
-        .error_code = response[0],
-        .address = @intCast(endian.loadInt(response[8..12], .little)),
-        .c1 = @intCast(endian.loadInt(response[2..4], .little)),
-        .c2 = @intCast(endian.loadInt(response[4..6], .little)),
-        .overcurrent = response[12],
+    return capabilities.parseStatus(response[0..received]) orelse transport.Error.Io;
+}
+
+fn checkResponseValidation(validation: capabilities.ResponseValidation) Error!void {
+    return switch (validation) {
+        .ok => {},
+        .short => transport.Error.Io,
+        .overcurrent => Error.Overcurrent,
+        .programmer_status_error => Error.ProgrammerStatusError,
     };
 }
 
@@ -285,6 +286,60 @@ test "T76 code write uses init command and framed payload" {
     try std.testing.expectEqual(@as(u64, 1), endian.loadInt(fake.sent.items[8..12], .little));
     try std.testing.expectEqual(@as(usize, 19), fake.payload_sent.items.len);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, fake.payload_sent.items[16..19]);
+}
+
+test "T76 code write allocates its frame before sending the initializer" {
+    var fake = transport.FakeTransport.init(std.testing.allocator, &.{});
+    defer fake.deinit();
+    const device = Device{
+        .protocol_id = 0,
+        .variant = 0,
+        .voltages_raw = 0,
+        .chip_info = 0,
+        .pin_map = 0,
+        .data_memory_size = 0,
+        .data_memory2_size = 0,
+        .page_size = 0,
+        .pulse_delay = 0,
+        .code_memory_size = 256,
+        .package_details_raw = 0,
+        .read_buffer_size = 64,
+        .write_buffer_size = 128,
+        .flags_raw = 0,
+    };
+    var storage: [0]u8 = .{};
+    var fixed = std.heap.FixedBufferAllocator.init(&storage);
+
+    try std.testing.expectError(error.OutOfMemory, writeCodeBlock(fixed.allocator(), fake.transport(), device, 0, 3, &.{ 1, 2, 3 }));
+    try std.testing.expectEqual(@as(usize, 0), fake.sent.items.len);
+    try std.testing.expectEqual(@as(usize, 0), fake.payload_sent.items.len);
+}
+
+test "T76 transaction cleanup failure quarantines transport" {
+    var response = [_]u8{0} ** packet.status_len;
+    response[0] = 1;
+    var fake = transport.FakeTransport.init(std.testing.allocator, &response);
+    fake.short_send_call = 3;
+    defer fake.deinit();
+
+    const device = Device{
+        .protocol_id = 0,
+        .variant = 0,
+        .voltages_raw = 0,
+        .chip_info = 0,
+        .pin_map = 0,
+        .data_memory_size = 0,
+        .data_memory2_size = 0,
+        .page_size = 0,
+        .pulse_delay = 0,
+        .code_memory_size = 0,
+        .package_details_raw = 0,
+        .read_buffer_size = 1,
+        .write_buffer_size = 1,
+        .flags_raw = 0,
+    };
+    try std.testing.expectError(Error.ProgrammerStatusError, beginLoadedTransaction(fake.transport(), device));
+    try std.testing.expectEqual(@as(usize, 1), fake.close_count);
 }
 
 test "T76 code read advertises the requested operation block count" {

@@ -3,6 +3,7 @@
 const std = @import("std");
 const model = @import("../core/model.zig");
 const algorithm_name = @import("../core/algorithm_name.zig");
+pub const capabilities = @import("capabilities.zig");
 const t48 = @import("t48.zig");
 const t56 = @import("t56.zig");
 const t76 = @import("t76.zig");
@@ -142,7 +143,8 @@ pub fn canAdjustClock(programmer: model.Programmer, protocol_id: u8) bool {
 }
 
 pub fn algorithmName(buffer: []u8, programmer: model.Programmer, device: anytype) !?[]const u8 {
-    if (programmer != .t56 and programmer != .t76) return null;
+    const value = capabilities.forProgrammer(programmer) orelse return null;
+    if (!value.requires_algorithm) return null;
     const flags = model.decodeFlags(device.flags_raw, device.voltages_raw, device.chip_info, device.protocol_id);
     return try algorithm_name.resolve(buffer, .{
         .programmer = programmer,

@@ -1,6 +1,6 @@
-# T56/T76 ROM Protocol Audit
+# T48/T56/T76 ROM Protocol Audit
 
-Audited 2026-07-29 against draft PR [#15](https://github.com/elithrar/xgecu-web/pull/15), commit `cec804cabbd5f4fdf087cc93eea2707c7d82c015`.
+Audited 2026-07-29 and re-reviewed 2026-07-30 against draft PR [#15](https://github.com/elithrar/xgecu-web/pull/15).
 
 ## Scope and evidence
 
@@ -14,6 +14,40 @@ Evidence, strongest first:
 - Software-only packet tests in this repository. No T56 or T76 hardware trace was captured for this PR.
 
 The official download page and forum mirror did not expose a single consistent "latest" version during this audit. Treat downloaded `algorithm.xml` files as versioned input, never as an interchangeable or stable data source.
+
+## Post-consolidation guardrail parity
+
+The authoritative capability table is `src/programmer/capabilities.zig`. Native Zig operations and the Wasm state machine consume it directly. The TypeScript/WebUSB layer only transports Wasm-requested USB transfers and maps public errors; it does not reimplement these protocol policies.
+
+| Guardrail | T48 | T56 | T76 | Shared enforcement after re-review |
+|---|---|---|---|---|
+| Algorithm before BEGIN | None | Required; catalog size and SHA-256 | Required; catalog size and SHA-256 | One capability flag drives native and Wasm requirements; digest tests cover T56 and T76 |
+| BEGIN status | Required | Required | Required | Shared status parser/validator; overcurrent and programmer status are hard failures |
+| Read/blank/verify block status | Required after every block | Required after every block | Not emitted by firmware | One capability flag drives all three read surfaces in native and Wasm; missing T56 polls were added |
+| Write block status | Required after every block | Required after every block | Not emitted by streaming protocol | One capability flag drives native and Wasm sequencing |
+| Protection status | Required | Required | Not emitted | One capability flag drives native and Wasm sequencing |
+| Erase response | Exact 8-byte opaque ACK or at least 13-byte status | At least 13-byte status | Full 64-byte status frame | One shared response validator; Wasm now rejects 13–63-byte T76 responses |
+| Short command/payload transfer | Hard I/O failure | Hard I/O failure | Hard I/O failure | Native transport vtable returns actual counts and wrappers require exact lengths; WebUSB already rejects short transfers |
+| Blank check | Full selected region before non-erasable writes and after electrical erase | Same, plus block status | Same, using streamed reads | Shared high-level operation policy and capability-driven status sequencing |
+| Readback verification | Default on; caller may explicitly disable | Default on; caller may explicitly disable | Mandatory because block writes have no status response | Native and Wasm reject T76 `verify: false` with `VerifyRequired` before BEGIN |
+| Verify comparison | Byte-for-byte over the requested write image | Same | Same | Core Zig owns comparison and failure; no weaker hash-only ROM verification path |
+| Algorithm integrity | Not applicable | Size plus SHA-256 before upload | Size plus SHA-256 before upload | Native and Wasm both validate catalog requirements; browser provider validation is defense in depth |
+| Cleanup failure | END failure quarantines native/WebUSB transport | Same | END or FPGA-reset failure quarantines transport | Native cleanup now closes on failure; WebUSB cleanup continues to close and quarantine |
+| Allocation before destructive/stream init | Blank-check and verify storage reserved before BEGIN | Same | Same, plus frame allocated before first write initializer | Native now matches Wasm's preflight allocation; T76 never begins an un-verifiable write |
+| Empty/oversized block | Rejected before transfer | Rejected before transfer | Rejected before transfer | T56 empty write rejection added; all model encoders retain address and size bounds |
+| Contact check | Supported for catalogued mappings | Unavailable | Unavailable pending trustworthy sourced behavior | Capability table prevents native/Wasm drift; no unsupported T76 pin-test claim |
+
+## Changes made in the 2026-07-30 pass
+
+- Added the shared protocol capability and response-validation module, exported through the native Zig package and imported directly by the Wasm ABI.
+- Added the missing T56 `0x39` poll after every ordinary read, blank-check read, and verify read.
+- Required the complete 64-byte T76 erase response in Wasm, matching native Zig and MiniPro.
+- Made native transports report actual command and payload transfer lengths and reject short transfers centrally.
+- Quarantined native transports when END, pin reset, or T76 FPGA-reset cleanup fails instead of silently swallowing the failure.
+- Made readback verification mandatory for T76 writes, where no per-block write status exists.
+- Moved T76 frame allocation before its first write initializer and rejected empty T56 blocks before any command is sent.
+- Moved native readback allocation before BEGIN so an allocation failure cannot strand a completed but unverified write.
+- Added symmetric algorithm-digest coverage for T56 and T76 and focused native/Wasm regression tests for the guardrails above.
 
 ## Protocol differences and sharp edges
 

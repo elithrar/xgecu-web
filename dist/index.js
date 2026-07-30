@@ -38,6 +38,7 @@ function i(e) {
 		case 26: return "PinCheckUnavailable";
 		case 27: return "ProtectionUnsupported";
 		case 28: return "InvalidAlgorithm";
+		case 29: return "VerifyRequired";
 		default: return "Unknown";
 	}
 }

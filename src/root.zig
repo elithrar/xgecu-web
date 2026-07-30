@@ -9,6 +9,7 @@ pub const core = struct {
     pub const model = @import("core/model.zig");
 };
 pub const programmer = struct {
+    pub const capabilities = @import("programmer/capabilities.zig");
     pub const protocol_bytes = @import("programmer/protocol_bytes.zig");
     pub const protocol = @import("programmer/protocol.zig");
     pub const session = @import("programmer/session.zig");

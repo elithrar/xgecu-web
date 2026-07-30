@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { XgecuWebUSBError } from "../src/errors";
+import { XgecuWebUSBError, xgecuErrorCodeFromAbi } from "../src/errors";
 import { WasmBridge } from "../src/wasm";
 import type { UsbTransfer, WasmExports } from "../src/wasm";
 
 describe("WasmBridge", () => {
+  it("maps the mandatory verification ABI error", () => {
+    expect(xgecuErrorCodeFromAbi(29)).toBe("VerifyRequired");
+  });
+
   it("maps parsed system info to a concrete programmer kind", () => {
     const fake = fakeExports();
     fake.mp_programmer_from_system_info = vi.fn(() => 2);

@@ -4,7 +4,7 @@ Programming ROMs from a browser is powerful and destructive.
 
 - Use `readROM` before `writeROM` to verify the programmer connection and target selection.
 - When `supportsPinCheck` is true, run `checkPinContacts` before reading. Inspect and reseat the target if any `badPins` are reported. A pass does not replace chip marking, orientation, package, or adapter checks.
-- Keep `verify: true` for write operations.
+- Keep `verify: true` for write operations. T76 writes cannot disable verification because its streaming write path has no per-block status response.
 - Save the first readback under a unique filename before making changes.
 - Compare the byte length of a patched image with the byte length of the readback before writing.
 - Confirm the exact ROM package, orientation, and adapter before writing.

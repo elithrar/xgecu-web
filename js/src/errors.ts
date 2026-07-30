@@ -10,6 +10,7 @@ export type XgecuErrorCode =
   | "Overcurrent"
   | "ProgrammerStatusError"
   | "VerifyFailed"
+  | "VerifyRequired"
   | "AlgorithmUnavailable"
   | "InvalidAlgorithm"
   | "PayloadBufferTooSmall"
@@ -91,6 +92,8 @@ export function xgecuErrorCodeFromAbi(code: number): XgecuErrorCode {
       return "ProtectionUnsupported";
     case 28:
       return "InvalidAlgorithm";
+    case 29:
+      return "VerifyRequired";
     default:
       return "Unknown";
   }

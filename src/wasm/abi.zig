@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const catalog = @import("../catalog/catalog.zig");
 const endian = @import("../core/endian.zig");
 const model = @import("../core/model.zig");
+const capabilities = @import("../programmer/capabilities.zig");
 const protocol_bytes = @import("../programmer/protocol_bytes.zig");
 const session = @import("../programmer/session.zig");
 const t48 = @import("../programmer/t48.zig");
@@ -301,7 +302,9 @@ export fn mp_start_read_rom(programmer_value: u32, device_ptr: u32, device_len: 
 
 export fn mp_start_pin_check(programmer_value: u32, device_ptr: u32, device_len: u32) u32 {
     const programmer = programmerFromAbi(programmer_value) catch return failStart("invalid programmer");
-    if (programmer == .t56 or programmer == .t76) return failStart("PinCheckUnavailable");
+    if (capabilities.forProgrammer(programmer)) |value| {
+        if (!value.supports_pin_check) return failStart("PinCheckUnavailable");
+    }
     const device_name = sliceConst(device_ptr, device_len);
     const device = catalog.find(device_name, programmer) catch return failStart("device not found or unsupported by requested programmer");
     if (!validPinCheck(device)) return failStart("PinCheckUnavailable");
@@ -679,9 +682,10 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             if (!op.device.supports(info.programmer)) return error.UnsupportedProgrammer;
             op.programmer = info.programmer;
             op.descriptor = op.device.descriptor(info.programmer);
+            const protocol_capabilities = capabilities.forProgrammer(info.programmer) orelse return error.UnsupportedProgrammer;
             try validateOperationAlgorithm(op);
             if (op.kind == .pin_check) {
-                if (info.programmer != .t48 or !validPinCheck(op.device)) return error.PinCheckUnavailable;
+                if (!protocol_capabilities.supports_pin_check or !validPinCheck(op.device)) return error.PinCheckUnavailable;
                 op.state = .send_pin_reset;
                 return;
             } else if (op.kind == .read) {
@@ -689,6 +693,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 if (size == 0) return error.EmptyMemoryRegion;
                 op.data = try allocator().alloc(u8, size);
             } else {
+                if (protocol_capabilities.requires_verified_write and !op.verify) return error.VerifyRequired;
                 const size = memorySize(op.device, op.memory);
                 if (size == 0) return error.EmptyMemoryRegion;
                 if (op.data.len > size) return error.InputTooLarge;
@@ -819,7 +824,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             try checkStatus(op, data);
             op.state = afterChipIdState(op);
         },
-        .send_protect_off => op.state = .send_protect_off_status,
+        .send_protect_off => op.state = if (capabilities.forProgrammer(op.programmer).?.status_after_protection) .send_protect_off_status else .send_write_cmd,
         .send_protect_off_status => op.state = .recv_protect_off_status,
         .recv_protect_off_status => {
             try checkStatus(op, data);
@@ -837,7 +842,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
                 if (byte != op.device.blank_value) return error.TargetNotBlank;
             }
             op.offset += len;
-            op.state = if (op.programmer == .t48)
+            op.state = if (capabilities.forProgrammer(op.programmer).?.status_after_read_block)
                 .blank_send_read_status
             else if (op.programmer == .t76 and op.offset < memorySize(op.device, op.memory))
                 .blank_recv_read_payload
@@ -865,7 +870,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
         },
         .send_write_cmd => op.state = .send_write_payload,
         .send_write_payload => {
-            if (op.programmer != .t76) {
+            if (capabilities.forProgrammer(op.programmer).?.status_after_write_block) {
                 op.state = .send_write_status;
                 return;
             }
@@ -911,7 +916,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             op.offset = 0;
             op.state = .verify_send_read_cmd;
         },
-        .send_protect_on => op.state = if (op.programmer == .t76) .send_final_end else .send_protect_on_status,
+        .send_protect_on => op.state = if (capabilities.forProgrammer(op.programmer).?.status_after_protection) .send_protect_on_status else .send_final_end,
         .send_protect_on_status => op.state = .recv_protect_on_status,
         .recv_protect_on_status => {
             try checkStatus(op, data);
@@ -927,7 +932,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             }
             @memcpy(op.data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
-            op.state = if (op.programmer == .t48)
+            op.state = if (capabilities.forProgrammer(op.programmer).?.status_after_read_block)
                 .send_read_status
             else if (op.offset < op.data.len)
                 if (op.programmer == .t76) .recv_read_payload else .send_read_cmd
@@ -949,7 +954,7 @@ fn completeTransfer(op: *Operation, data: []const u8) !void {
             }
             @memcpy(op.verify_data[op.offset .. op.offset + len], source[0..len]);
             op.offset += len;
-            op.state = if (op.programmer == .t48)
+            op.state = if (capabilities.forProgrammer(op.programmer).?.status_after_read_block)
                 .verify_send_read_status
             else if (op.programmer == .t76 and op.offset < op.verify_data.len)
                 .verify_recv_read_payload
@@ -1140,7 +1145,9 @@ fn blockCount(total: usize, chunk: usize) usize {
 
 fn validateOperationAlgorithm(op: *Operation) !void {
     const requirement = op.device.algorithmFor(op.programmer) orelse {
-        if (op.programmer == .t56 or op.programmer == .t76) return error.AlgorithmUnavailable;
+        if (capabilities.forProgrammer(op.programmer)) |value| {
+            if (value.requires_algorithm) return error.AlgorithmUnavailable;
+        }
         return;
     };
     const bytes = if (op.programmer == .t56) op.t56_algorithm else op.t76_algorithm;
@@ -1160,24 +1167,23 @@ fn checkT76Ack(op: *Operation, data: []const u8) !void {
 }
 
 fn checkStatus(op: *Operation, data: []const u8) !void {
-    if (data.len < 13) {
-        setShortRead(op, data.len, 13);
-        return error.ShortRead;
-    }
-    if (data[12] != 0) return error.Overcurrent;
-    if (data[0] != 0) return error.ProgrammerStatusError;
+    try checkResponseValidation(op, data.len, capabilities.validateStatusResponse(data));
 }
 
 fn checkEraseResponse(op: *Operation, data: []const u8) !void {
-    if (op.programmer == .t48 and data.len <= packet.t48_erase_ack_len) {
-        if (data.len < packet.t48_erase_ack_len) {
-            setShortRead(op, data.len, packet.t48_erase_ack_len);
+    try checkResponseValidation(op, data.len, capabilities.validateEraseResponse(op.programmer, data));
+}
+
+fn checkResponseValidation(op: *Operation, actual: usize, validation: capabilities.ResponseValidation) !void {
+    return switch (validation) {
+        .ok => {},
+        .short => |required| {
+            setShortRead(op, actual, required);
             return error.ShortRead;
-        }
-        // T48's short erase acknowledgement is opaque; restart status is authoritative.
-        return;
-    }
-    try checkStatus(op, data);
+        },
+        .overcurrent => error.Overcurrent,
+        .programmer_status_error => error.ProgrammerStatusError,
+    };
 }
 
 fn checkChipId(op: *Operation, data: []const u8) !void {
@@ -1435,6 +1441,7 @@ fn errorCode(err: anyerror) u32 {
         error.PinCheckUnavailable => 26,
         error.ProtectionUnsupported => 27,
         error.InvalidAlgorithm => 28,
+        error.VerifyRequired => 29,
         else => 1,
     };
 }
@@ -2200,25 +2207,128 @@ test "T76 Wasm reads one init command then consecutive endpoint 2 payloads" {
     try std.testing.expectEqual(State.send_final_end, op.state);
 }
 
-test "Wasm rejects algorithms that do not match catalog size or digest" {
-    var bytes = [_]u8{ 1, 2, 3 };
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(&bytes, &digest, .{});
-    var device = catalog.devices[0];
-    device.t76_algorithm = .{ .name = "TEST", .size = bytes.len, .sha256 = digest };
-    var op = Operation{
+test "T56 Wasm read, blank-check, and verify paths poll block status" {
+    var read_data = [_]u8{0} ** 4;
+    var read_op = Operation{
         .kind = .read,
+        .requested_programmer = .t56,
+        .programmer = .t56,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t56),
+        .memory = .code,
+        .state = .recv_read_payload,
+        .data = &read_data,
+        .transaction_open = true,
+    };
+    read_op.descriptor.read_buffer_size = 4;
+    try completeTransfer(&read_op, &.{ 1, 2, 3, 4 });
+    try std.testing.expectEqual(State.send_read_status, read_op.state);
+
+    var write_data = [_]u8{0xff};
+    var blank_op = Operation{
+        .kind = .write,
+        .requested_programmer = .t56,
+        .programmer = .t56,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t56),
+        .memory = .code,
+        .state = .blank_recv_read_payload,
+        .data = &write_data,
+        .offset = catalog.devices[0].code_memory_size - 4,
+        .transaction_open = true,
+    };
+    blank_op.descriptor.read_buffer_size = 4;
+    try completeTransfer(&blank_op, &.{ 0xff, 0xff, 0xff, 0xff });
+    try std.testing.expectEqual(State.blank_send_read_status, blank_op.state);
+
+    var expected = [_]u8{ 1, 2, 3, 4 };
+    var actual = [_]u8{0} ** 4;
+    var verify_op = Operation{
+        .kind = .write,
+        .requested_programmer = .t56,
+        .programmer = .t56,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t56),
+        .memory = .code,
+        .state = .verify_recv_read_payload,
+        .data = &expected,
+        .verify_data = &actual,
+        .verify = true,
+        .transaction_open = true,
+    };
+    verify_op.descriptor.read_buffer_size = 4;
+    try completeTransfer(&verify_op, &expected);
+    try std.testing.expectEqual(State.verify_send_read_status, verify_op.state);
+}
+
+test "T76 Wasm erase requires the full response frame" {
+    var op = Operation{
+        .kind = .write,
         .requested_programmer = .t76,
         .programmer = .t76,
+        .device = catalog.devices[0],
+        .descriptor = catalog.devices[0].descriptor(.t76),
+        .memory = .code,
+        .state = .recv_erase,
+    };
+    var response = [_]u8{0} ** packet.erase_response_len;
+
+    try std.testing.expectError(error.ShortRead, checkEraseResponse(&op, response[0 .. response.len - 1]));
+    try std.testing.expectEqual(@as(usize, packet.erase_response_len), op.short_read_required);
+    try checkEraseResponse(&op, &response);
+}
+
+test "T76 Wasm rejects disabling mandatory readback verification" {
+    var algorithm = [_]u8{ 1, 2, 3 };
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(&algorithm, &digest, .{});
+    var device = catalog.devices[0];
+    device.t76_algorithm = .{ .name = "TEST", .size = algorithm.len, .sha256 = digest };
+    var data = [_]u8{0xaa};
+    var op = Operation{
+        .kind = .write,
+        .requested_programmer = .t76,
         .device = device,
         .descriptor = device.descriptor(.t76),
         .memory = .code,
-        .t76_algorithm = &bytes,
+        .state = .recv_info,
+        .data = &data,
+        .verify = false,
+        .t76_algorithm = &algorithm,
     };
+    var info = [_]u8{0} ** packet.system_info_response_len;
+    info[4] = 1;
+    info[6] = 8;
 
-    try validateOperationAlgorithm(&op);
-    bytes[0] ^= 0xff;
-    try std.testing.expectError(error.InvalidAlgorithm, validateOperationAlgorithm(&op));
+    try std.testing.expectError(error.VerifyRequired, completeTransfer(&op, &info));
+}
+
+test "Wasm rejects T56 and T76 algorithms that do not match catalog digest" {
+    for ([_]model.Programmer{ .t56, .t76 }) |programmer| {
+        var bytes = [_]u8{ 1, 2, 3 };
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(&bytes, &digest, .{});
+        var device = catalog.devices[0];
+        switch (programmer) {
+            .t56 => device.t56_algorithm = .{ .name = "TEST", .size = bytes.len, .sha256 = digest },
+            .t76 => device.t76_algorithm = .{ .name = "TEST", .size = bytes.len, .sha256 = digest },
+            else => unreachable,
+        }
+        var op = Operation{
+            .kind = .read,
+            .requested_programmer = programmer,
+            .programmer = programmer,
+            .device = device,
+            .descriptor = device.descriptor(programmer),
+            .memory = .code,
+            .t56_algorithm = if (programmer == .t56) &bytes else &.{},
+            .t76_algorithm = if (programmer == .t76) &bytes else &.{},
+        };
+
+        try validateOperationAlgorithm(&op);
+        bytes[0] ^= 0xff;
+        try std.testing.expectError(error.InvalidAlgorithm, validateOperationAlgorithm(&op));
+    }
 }
 
 fn expectNextTransfer(op: *Operation, kind: TransferKind, endpoint: u8, len: u32) !void {
