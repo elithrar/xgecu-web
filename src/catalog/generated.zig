@@ -29,6 +29,7 @@ const at28c256_dip28_aliases = [_][]const u8{
     "AT28C256@DIP28",
 };
 const at28c256_dip28_programmers = [_]model.Programmer{
+    .t48,
     .t56,
     .t76,
 };
@@ -56,6 +57,7 @@ const am27c64_dip28_aliases = [_][]const u8{
     "AM27C64@DIP28",
 };
 const am27c64_dip28_programmers = [_]model.Programmer{
+    .t48,
     .t56,
     .t76,
 };
@@ -65,6 +67,7 @@ const am27c128_dip28_aliases = [_][]const u8{
     "AM27C128@DIP28",
 };
 const am27c128_dip28_programmers = [_]model.Programmer{
+    .t48,
     .t56,
     .t76,
 };
@@ -74,6 +77,7 @@ const am27c256_dip28_aliases = [_][]const u8{
     "AM27C256@DIP28",
 };
 const am27c256_dip28_programmers = [_]model.Programmer{
+    .t48,
     .t56,
     .t76,
 };
@@ -83,6 +87,7 @@ const m27c256b_dip28_aliases = [_][]const u8{
     "M27C256B@DIP28",
 };
 const m27c256b_dip28_programmers = [_]model.Programmer{
+    .t48,
     .t56,
     .t76,
 };
@@ -92,6 +97,7 @@ const am27c512_dip28_aliases = [_][]const u8{
     "AM27C512@DIP28",
 };
 const am27c512_dip28_programmers = [_]model.Programmer{
+    .t48,
     .t56,
     .t76,
 };
@@ -101,6 +107,7 @@ const m27c512_dip28_aliases = [_][]const u8{
     "M27C512@DIP28",
 };
 const m27c512_dip28_programmers = [_]model.Programmer{
+    .t48,
     .t56,
     .t76,
 };
@@ -110,6 +117,7 @@ const at27c512r_dip28_aliases = [_][]const u8{
     "AT27C512R@DIP28",
 };
 const at27c512r_dip28_programmers = [_]model.Programmer{
+    .t48,
     .t56,
     .t76,
 };

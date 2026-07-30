@@ -1,6 +1,6 @@
 # T48 implementation review
 
-This review compares the T48 path with the local `minipro` source at revision `a8efaedc236c1d9718bd28299dfbb99536b010ff`, the revision recorded in the seed catalog. It focuses on protocol correctness and hardware safety for the catalogued AT28C64B and M27C64A targets.
+This review compares the T48 path with the local `minipro` source at revision `a8efaedc236c1d9718bd28299dfbb99536b010ff`, the revision recorded in the seed catalog. It focuses on protocol correctness and hardware safety for the ten catalogued 28-pin ROM targets. All ten use exact `INFOIC2PLUS` records shared by T48 and T56; AT28C64B and M27C64A additionally carry explicit T48 pin-contact metadata.
 
 ## Findings addressed
 

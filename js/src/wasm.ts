@@ -83,6 +83,8 @@ const textDecoder = new TextDecoder();
 const COMMAND_ENDPOINT = 1;
 const SYSTEM_INFO_REQUEST_LEN = 5;
 const SYSTEM_INFO_RESPONSE_LEN = 80;
+const DEFAULT_DEVICE_LIST_LIMIT = 100;
+const FULL_DEVICE_LIST_LIMIT = 0xffff_ffff;
 
 export class WasmBridge {
   private readonly operations = new Map<WasmOperationHandle, "ready" | "running">();
@@ -99,8 +101,9 @@ export class WasmBridge {
 
   deviceList(query: DeviceListQuery = {}): DeviceSummary[] {
     const queryBytes = textEncoder.encode(query.search ?? "");
+    const limit = query.limit ?? (queryBytes.byteLength === 0 ? FULL_DEVICE_LIST_LIMIT : DEFAULT_DEVICE_LIST_LIMIT);
     return this.withBytes(queryBytes, (queryPtr) => {
-      const rc = this.exports.mp_device_list(queryPtr, queryBytes.byteLength, programmerToAbi(query.programmer ?? "auto"), query.limit ?? 100);
+      const rc = this.exports.mp_device_list(queryPtr, queryBytes.byteLength, programmerToAbi(query.programmer ?? "auto"), limit);
       this.throwIfError(rc);
       return JSON.parse(textDecoder.decode(this.resultBytes())) as DeviceSummary[];
     });

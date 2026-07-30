@@ -41,6 +41,7 @@ export type AlgorithmProvider = (requirement: AlgorithmRequirement) => Promise<U
 export interface DeviceListQuery {
     search?: string;
     programmer?: ProgrammerKind;
+    /** Maximum results. Defaults to the full catalog for an empty search and 100 otherwise. */
     limit?: number;
 }
 export interface ProgrammerInfo {
