@@ -12,8 +12,8 @@ async function bridge() {
   return new WasmBridge(instance.exports as unknown as WasmExports);
 }
 
-function t48(options: { badId?: boolean; failedErase?: boolean; corruptReadback?: boolean } = {}) {
-  const memory = new Uint8Array(32768).fill(0x00);
+function t48(options: { chipId?: number; initialByte?: number; badId?: boolean; failedErase?: boolean; corruptReadback?: boolean } = {}) {
+  const memory = new Uint8Array(32768).fill(options.initialByte ?? 0x00);
   const commands: number[] = [];
   const reads: number[] = [];
   const writes: number[] = [];
@@ -25,7 +25,10 @@ function t48(options: { badId?: boolean; failedErase?: boolean; corruptReadback?
       if (transfer.endpoint === 1) {
         command = transfer.data.slice();
         commands.push(command[0]!);
-        if (command[0] === 0x0e && !options.failedErase) memory.fill(0xff);
+        if (command[0] === 0x0e) {
+          blankBytesRead = 0;
+          if (!options.failedErase) memory.fill(0xff);
+        }
       } else {
         expect(transfer.endpoint).toBe(2);
         expect(command[0]).toBe(0x0c);
@@ -50,7 +53,7 @@ function t48(options: { badId?: boolean; failedErase?: boolean; corruptReadback?
       expect(length).toBe(1024);
       expect(address + length).toBeLessThanOrEqual(memory.length);
       reads.push(address);
-      if (commands.includes(0x0e) && !wrote) blankBytesRead += length;
+      if (!wrote) blankBytesRead += length;
       const result = memory.slice(address, address + length);
       if (options.corruptReadback && wrote && address === 0x7c00) result[1023]! ^= 1;
       return result;
@@ -59,8 +62,9 @@ function t48(options: { badId?: boolean; failedErase?: boolean; corruptReadback?
     if (command[0] === 0x00) { response[4] = 1; response[6] = 7; }
     else if (command[0] === 0x05) {
       response[0] = 1;
-      response[2] = 0xda;
-      response[3] = options.badId ? 0xff : 0x02;
+      const chipId = options.chipId ?? 0xda02;
+      response[2] = chipId >>> 8;
+      response[3] = options.badId ? 0xff : chipId & 0xff;
     }
     return response;
   } };
@@ -126,5 +130,45 @@ describe.each(["W27C257", "W27E257"])("%s shipped T48 profile", (device) => {
       expect(() => api.startWriteROM({ ...writeOptions, ...protection, device, data: new Uint8Array(32768) }))
         .toThrow("ProtectionUnsupported");
     }
+  });
+});
+
+// ST's -10F1 and -12F1 grades use this same existing canonical profile;
+// access speed is not a different programming algorithm (see the source note).
+describe("M27C256B@DIP28 for -10F1 and -12F1 UV parts", () => {
+  const device = "M27C256B@DIP28";
+
+  it("rejects electrical erase and preserves the existing ST profile", async () => {
+    const api = await bridge();
+    expect(api.resolveDevice(device, "t48")).toMatchObject({
+      codeMemorySize: 32768, packagePins: 28, chipId: 0x208d, chipIdBytesCount: 2,
+      canErase: false, supportsT48: true,
+      supportsUnprotect: false, supportsProtect: false,
+    });
+    expect(() => api.startWriteROM({ ...writeOptions, device, data: new Uint8Array(32768) }))
+      .toThrow("EraseUnsupported");
+  });
+
+  it("blank-checks all 32 KiB before writing an externally erased part and verifies every byte", async () => {
+    const api = await bridge();
+    const fake = t48({ chipId: 0x208d, initialByte: 0xff });
+    const image = Uint8Array.from({ length: 32768 }, (_, i) => (i ^ (i >>> 8)) & 0xff);
+    await api.runOperation(api.startWriteROM({ ...writeOptions, device, erase: false, data: image }), fake.transfer);
+    expect(fake.memory).toEqual(image);
+    expect(fake.commands).not.toContain(0x0e);
+    expect(fake.writes).toEqual(Array.from({ length: 256 }, (_, i) => i * 128));
+    expect(fake.reads).toEqual(Array.from({ length: 64 }, (_, i) => (i % 32) * 1024));
+    expect(fake.commands.at(-1)).toBe(0x04);
+  });
+
+  it("refuses programming when the final byte is not UV-erased", async () => {
+    const api = await bridge();
+    const fake = t48({ chipId: 0x208d, initialByte: 0xff });
+    fake.memory[32767] = 0;
+    const write = api.startWriteROM({ ...writeOptions, device, erase: false, data: new Uint8Array(32768) });
+    await expect(api.runOperation(write, fake.transfer)).rejects.toMatchObject({ code: "TargetNotBlank" });
+    expect(fake.commands).not.toContain(0x0e);
+    expect(fake.writes).toHaveLength(0);
+    expect(fake.commands.at(-1)).toBe(0x04);
   });
 });
