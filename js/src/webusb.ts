@@ -117,7 +117,7 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
 export class BrowserXgecuWebUSB implements XgecuWebUSB {
   constructor(
     private readonly wasm: WasmBridge,
-    private readonly usb: USBNavigatorLike = requireWebUSB(),
+    private readonly usb?: USBNavigatorLike,
     private readonly algorithmProvider?: AlgorithmProvider
   ) {}
 
@@ -131,14 +131,14 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
 
   async getProgrammers(): Promise<ProgrammerInfo[]> {
     return unwrapInternal(await resultFromPromise(async () => {
-      const devices = await this.usb.getDevices();
+      const devices = await (this.usb ?? requireWebUSB()).getDevices();
       return devices.filter(isSupportedUsbId).map(deviceInfo);
     }));
   }
 
   async requestProgrammer(): Promise<ProgrammerConnection> {
     return unwrapInternal(await resultFromPromise(async () => {
-      const device = await this.usb.requestDevice({
+      const device = await (this.usb ?? requireWebUSB()).requestDevice({
         filters: [
           { vendorId: XGECU_VENDOR_ID, productId: T48_T56_PRODUCT_ID },
           { vendorId: XGECU_VENDOR_ID, productId: T76_PRODUCT_ID }
@@ -160,6 +160,23 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       await openAndClaim(device);
       return connectionFor(device);
     }));
+  }
+
+  async identifyProgrammer(programmer: ProgrammerConnection): Promise<Exclude<ProgrammerKind, "auto">> {
+    validateConnection(programmer);
+    if (!programmer.opened) {
+      throw new XgecuWebUSBError("The programmer connection is not open.", "WebUSBLifecycleFailed");
+    }
+    const device = programmer.device;
+    return withProgrammerOperation(device, async () => {
+      await ensureReady(device);
+      const kind = await this.wasm.identifyProgrammer((transfer) => performWebUSBTransfer(device, transfer));
+      if ((device.productId === T76_PRODUCT_ID) !== (kind === "t76")) {
+        throw new XgecuWebUSBError("USB identity and programmer system information disagree.", "ProgrammerMismatch");
+      }
+      stateFor(device).detectedProgrammer = kind;
+      return kind;
+    });
   }
 
   async readROM(options: ReadROMOptions): Promise<Uint8Array> {
@@ -319,7 +336,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
 export async function createProgrammer(options: { wasmUrl?: string | URL; usb?: USBNavigatorLike; algorithmProvider?: AlgorithmProvider } = {}): Promise<XgecuWebUSB> {
   return unwrapInternal(await resultFromPromise(async () => {
     const wasm = await WasmBridge.load(options.wasmUrl);
-    return new BrowserXgecuWebUSB(wasm, options.usb ?? requireWebUSB(), options.algorithmProvider);
+    return new BrowserXgecuWebUSB(wasm, options.usb, options.algorithmProvider);
   }));
 }
 

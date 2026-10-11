@@ -66,7 +66,8 @@ zig build wasm -Doptimize=ReleaseSmall
 
 ## Browser usage
 
-WebUSB requires a Chromium-based browser and a secure context: HTTPS or `localhost`.
+Catalog browsing works without WebUSB or a connected programmer. Hardware access
+requires WebUSB in a Chromium-based browser and a secure context: HTTPS or `localhost`.
 
 ```ts
 import { XgecuWebUSBError, createProgrammer, type ProgrammerConnection } from "xgecu-web";
@@ -79,6 +80,8 @@ console.log(devices);
 let programmer: ProgrammerConnection | undefined;
 try {
   programmer = await api.requestProgrammer();
+  const kind = await api.identifyProgrammer(programmer);
+  if (kind !== "t48") throw new Error("This example requires a T48.");
   const contacts = await api.checkPinContacts({
     programmer,
     device: "AT28C64B@DIP28"

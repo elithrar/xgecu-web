@@ -8,7 +8,12 @@ The JavaScript layer owns WebUSB permissions, opening, configuration selection, 
 4. JS passes the transfer result back into Wasm.
 5. The loop repeats until Wasm reports completion.
 
-The high-level browser API serializes operations per physical programmer. A second `checkPinContacts`, `readROM`, or `writeROM` call on the same device, or an attempt to close its connection during an operation, throws `XgecuWebUSBError` with `code === "OperationInProgress"` until the first operation completes.
+Catalog initialization and lookup work without WebUSB. USB access is required
+only when discovering, opening, or operating a programmer. `identifyProgrammer()`
+queries system information without starting a chip transaction; it does not infer
+the model from a product name or the shared T48/T56 USB ID.
+
+The high-level browser API serializes operations per physical programmer. A second `identifyProgrammer`, `checkPinContacts`, `readROM`, or `writeROM` call on the same device, or an attempt to close its connection during an operation, throws `XgecuWebUSBError` with `code === "OperationInProgress"` until the first operation completes.
 An unexpected device close or physical disconnect invalidates the active connection for programmer operations. Reconnect explicitly before writing so applications can invalidate stale backups and confirmations.
 
 Endpoint mapping:

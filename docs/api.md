@@ -81,7 +81,10 @@ Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecyc
 
 ## `createProgrammer(options?)`
 
-Loads the Wasm module and returns the high-level browser API.
+Loads the Wasm module and returns the high-level browser API. Initialization,
+`deviceList()` and `resolveDevice()` do not require WebUSB or USB permission.
+`getProgrammers()` and `requestProgrammer()` report `WebUSBUnavailable` when
+the browser does not expose WebUSB.
 
 ```ts
 const api = await createProgrammer({
@@ -158,6 +161,28 @@ if (existing) {
   } finally {
     await programmer.close();
   }
+}
+```
+
+## `identifyProgrammer(programmer)`
+
+Returns `"t48"`, `"t56"` or `"t76"` from the connected programmer's system-info
+response, without starting a chip transaction. T48 and T56 share a USB product ID;
+USB names and IDs alone do not identify the model. Use this before enabling
+model-specific actions. This identifies the programmer, not the inserted chip.
+
+The connection must be open and owned by this API. The query uses the same
+per-device operation lock and quarantine checks as ROM operations. Unsupported,
+bootloader, short, and contradictory model responses fail closed. ROM operations
+still validate the model independently before accessing the chip.
+
+```ts
+const programmer = await api.requestProgrammer();
+try {
+  const kind = await api.identifyProgrammer(programmer);
+  console.log(kind, api.resolveDevice("W27C257@DIP28", kind));
+} finally {
+  await programmer.close();
 }
 ```
 

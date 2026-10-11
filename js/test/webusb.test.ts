@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { WebUSBTransferError } from "../src/errors";
-import { BrowserXgecuWebUSB, performWebUSBTransfer } from "../src/webusb";
+import { BrowserXgecuWebUSB, createProgrammer, performWebUSBTransfer } from "../src/webusb";
 import type { USBConfigurationLike, USBDeviceLike, USBNavigatorLike } from "../src/types";
 import type { UsbTransferHandler, WasmBridge } from "../src/wasm";
 
@@ -114,6 +115,99 @@ describe("performWebUSBTransfer", () => {
 });
 
 describe("BrowserXgecuWebUSB", () => {
+  it("initializes the shipped catalog without WebUSB", async () => {
+    vi.stubGlobal("navigator", {});
+    vi.stubGlobal("fetch", async () => new Response(readFileSync(new URL("../../dist/xgecu_web.wasm", import.meta.url))));
+    try {
+      const api = await createProgrammer();
+      expect(api.deviceList()).toHaveLength(11);
+      expect(api.resolveDevice("W27C257", "t48")?.codeMemorySize).toBe(32768);
+      await expect(api.requestProgrammer()).rejects.toMatchObject({ code: "WebUSBUnavailable" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    { model: 7, firmware: 1, length: 80, expected: "t48" },
+    { model: 6, firmware: 1, length: 80, expected: "t56" },
+    { model: 7, firmware: 0, length: 80, error: "UnsupportedProgrammer" },
+    { model: 7, firmware: 1, length: 62, error: "UnsupportedProgrammer" },
+    { model: 255, firmware: 1, length: 80, error: "UnsupportedProgrammer" },
+  ])("identifies via shipped Wasm without accessing chip pins: %j", async ({ model, firmware, length, expected, error }) => {
+    vi.stubGlobal("fetch", async () => new Response(readFileSync(new URL("../../dist/xgecu_web.wasm", import.meta.url))));
+    try {
+      const device = new FakeDevice();
+      const response = new Uint8Array(length);
+      response[4] = firmware;
+      response[6] = model;
+      device.in = [response];
+      const api = await createProgrammer({ usb: fakeUsb(device) });
+      const connection = await api.requestProgrammer();
+      try {
+        if (error) await expect(api.identifyProgrammer(connection)).rejects.toMatchObject({ code: error });
+        else expect(await api.identifyProgrammer(connection)).toBe(expected);
+        expect(device.out).toEqual([{ endpoint: 1, data: new Uint8Array(5) }]);
+      } finally {
+        await connection.close();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("browses the catalog without WebUSB and rejects hardware access when unavailable", async () => {
+    vi.stubGlobal("navigator", {});
+    try {
+      const api = new BrowserXgecuWebUSB(fakeWasm());
+      expect(api.deviceList()).toHaveLength(1);
+      expect(api.resolveDevice("AT28C64B")).toMatchObject({ name: "AT28C64B@DIP28" });
+      await expect(api.getProgrammers()).rejects.toMatchObject({ code: "WebUSBUnavailable" });
+      await expect(api.requestProgrammer()).rejects.toMatchObject({ code: "WebUSBUnavailable" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("identifies the reported model instead of the shared USB product name", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    wasm.identifyProgrammer = vi.fn(async () => "t56" as const);
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const connection = await api.requestProgrammer();
+    expect(await api.identifyProgrammer(connection)).toBe("t56");
+    expect(wasm.identifyProgrammer).toHaveBeenCalledOnce();
+    await connection.close();
+    await expect(api.identifyProgrammer(connection)).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+    expect(wasm.identifyProgrammer).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a programmer model that disagrees with its USB identity", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    wasm.identifyProgrammer = async () => "t76";
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const connection = await api.requestProgrammer();
+    await expect(api.identifyProgrammer(connection)).rejects.toMatchObject({ code: "ProgrammerMismatch" });
+    await connection.close();
+  });
+
+  it("serializes programmer identification and prevents close or chip operations during it", async () => {
+    const device = new FakeDevice();
+    const wasm = fakeWasm();
+    let release!: (kind: "t48") => void;
+    wasm.identifyProgrammer = () => new Promise((resolve) => { release = resolve; });
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
+    const connection = await api.requestProgrammer();
+    const pending = api.identifyProgrammer(connection);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    await expect(api.readROM({ programmer: connection, device: "AT28C64B" })).rejects.toMatchObject({ code: "OperationInProgress" });
+    await expect(connection.close()).rejects.toMatchObject({ code: "OperationInProgress" });
+    release("t48");
+    expect(await pending).toBe("t48");
+    await connection.close();
+  });
+
   it("opens, configures, and claims requested programmers", async () => {
     const device = new FakeDevice();
     device.productName = "XGecu T48 \0";

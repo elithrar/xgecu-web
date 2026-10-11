@@ -259,6 +259,10 @@ export fn mp_programmer_from_system_info(data_ptr: u32, data_len: u32) u32 {
         _ = setError("unsupported programmer system info");
         return 0;
     };
+    if (info.status == .bootloader) {
+        _ = setError("programmer is in bootloader mode");
+        return 0;
+    }
     return switch (info.programmer) {
         .t48 => 1,
         .t56 => 2,
