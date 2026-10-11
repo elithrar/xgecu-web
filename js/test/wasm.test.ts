@@ -220,6 +220,24 @@ describe("WasmBridge", () => {
     expect(fake.mp_operation_destroy).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects a token from another bridge without consuming either operation", async () => {
+    const firstFake = fakeExports();
+    const secondFake = fakeExports();
+    const first = new WasmBridge(firstFake);
+    const second = new WasmBridge(secondFake);
+    const firstHandle = startTestRead(first);
+    const secondHandle = startTestRead(second);
+    const transfer = vi.fn(async () => undefined);
+    await expect(second.runOperation(firstHandle, transfer)).rejects.toMatchObject({ code: "InvalidInput" });
+    second.disposeOperation(firstHandle);
+    expect(secondFake.mp_operation_destroy).not.toHaveBeenCalled();
+    expect(transfer).not.toHaveBeenCalled();
+    await first.runOperation(firstHandle, transfer);
+    await second.runOperation(secondHandle, transfer);
+    expect(firstFake.mp_operation_destroy).toHaveBeenCalledExactlyOnceWith(1);
+    expect(secondFake.mp_operation_destroy).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
   it("reports cleanup failure when the abort transaction cannot be drained", async () => {
     const fake = fakeExports();
     fake.sequence = [1, 1];

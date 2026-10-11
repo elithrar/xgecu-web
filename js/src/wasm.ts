@@ -85,9 +85,12 @@ const SYSTEM_INFO_REQUEST_LEN = 5;
 const SYSTEM_INFO_RESPONSE_LEN = 80;
 const DEFAULT_DEVICE_LIST_LIMIT = 100;
 const FULL_DEVICE_LIST_LIMIT = 0xffff_ffff;
+// ABI pointers can be reused after destruction. Public tokens must not be,
+// including between bridges backed by different Wasm instances.
+let nextOperationToken = 1;
 
 export class WasmBridge {
-  private readonly operations = new Map<WasmOperationHandle, "ready" | "running">();
+  private readonly operations = new Map<WasmOperationHandle, { rawHandle: number; state: "ready" | "running" }>();
 
   constructor(private readonly exports: WasmExports) {}
 
@@ -265,20 +268,21 @@ export class WasmBridge {
   }
 
   disposeOperation(handle: WasmOperationHandle): void {
-    const state = this.operations.get(handle);
-    if (!state) return;
-    if (state === "running") {
+    const operation = this.operations.get(handle);
+    if (!operation) return;
+    if (operation.state === "running") {
       throw new XgecuWebUSBError("The Wasm operation is currently running.", "OperationInProgress");
     }
     this.operations.delete(handle);
-    this.exports.mp_operation_destroy(handle);
+    this.exports.mp_operation_destroy(operation.rawHandle);
   }
 
-  async runOperation(handle: WasmOperationHandle, performTransfer: UsbTransferHandler, options: RunOperationOptions = {}): Promise<Uint8Array> {
-    const state = this.operations.get(handle);
-    if (state === "running") throw new XgecuWebUSBError("The Wasm operation is already running.", "OperationInProgress");
-    if (state !== "ready") throw new XgecuWebUSBError("The Wasm operation handle is invalid or already consumed.", "InvalidInput");
-    this.operations.set(handle, "running");
+  async runOperation(token: WasmOperationHandle, performTransfer: UsbTransferHandler, options: RunOperationOptions = {}): Promise<Uint8Array> {
+    const operation = this.operations.get(token);
+    if (operation?.state === "running") throw new XgecuWebUSBError("The Wasm operation is already running.", "OperationInProgress");
+    if (!operation) throw new XgecuWebUSBError("The Wasm operation handle is invalid or already consumed.", "InvalidInput");
+    operation.state = "running";
+    const handle = operation.rawHandle;
     let lastProgress: RomProgressEvent | undefined;
     const emitProgress = async () => {
       if (!options.onProgress) return;
@@ -351,14 +355,14 @@ export class WasmBridge {
           // Preserve the lifecycle failure even if a caller's notification hook fails.
         }
         throw new XgecuWebUSBError(
-          "The programmer operation failed and its hardware cleanup could not be completed. Reconnect the programmer before continuing.",
+          "The programmer operation failed and its hardware cleanup could not be completed. Disconnect USB power, then reload this page before reconnecting.",
           "WebUSBLifecycleFailed",
           error
         );
       }
       throw error;
     } finally {
-      this.operations.delete(handle);
+      this.operations.delete(token);
       this.exports.mp_operation_destroy(handle);
     }
   }
@@ -416,15 +420,19 @@ export class WasmBridge {
   }
 
   private registerOperation(rawHandle: number): WasmOperationHandle {
-    const handle = rawHandle as WasmOperationHandle;
-    if (this.operations.has(handle)) {
+    if ([...this.operations.values()].some((operation) => operation.rawHandle === rawHandle)) {
       throw new XgecuWebUSBError("Wasm returned an operation handle that is already active.");
     }
-    this.operations.set(handle, "ready");
+    if (!Number.isSafeInteger(nextOperationToken)) {
+      this.exports.mp_operation_destroy(rawHandle);
+      throw new XgecuWebUSBError("Wasm operation token space exhausted.", "InvalidInput");
+    }
+    const handle = nextOperationToken++ as WasmOperationHandle;
+    this.operations.set(handle, { rawHandle, state: "ready" });
     return handle;
   }
 
-  private async drainCleanupBestEffort(handle: WasmOperationHandle, performTransfer: UsbTransferHandler): Promise<boolean> {
+  private async drainCleanupBestEffort(handle: number, performTransfer: UsbTransferHandler): Promise<boolean> {
     try {
       return await this.drainCleanup(handle, performTransfer);
     } catch {
@@ -432,7 +440,7 @@ export class WasmBridge {
     }
   }
 
-  private async drainCleanup(handle: WasmOperationHandle, performTransfer: UsbTransferHandler): Promise<boolean> {
+  private async drainCleanup(handle: number, performTransfer: UsbTransferHandler): Promise<boolean> {
     for (let step = 0; step < 4; step += 1) {
       const kind = this.exports.mp_operation_next(handle);
       if (kind === 0 || kind === 3) return true;

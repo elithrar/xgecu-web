@@ -36,12 +36,18 @@ pub const DeviceRecord = struct {
     write_buffer_size: u16,
     flags_raw: u32,
     can_erase: bool,
+    // Electrical erase support does not imply EEPROM-style in-place rewrites.
+    requires_blank_before_write: bool = false,
     can_adjust_clock: bool = false,
     chip_id: u32 = 0,
     chip_id_bytes_count: u8 = 0,
     blank_value: u8 = 0xff,
     t56_algorithm: ?AlgorithmRequirement = null,
     t76_algorithm: ?AlgorithmRequirement = null,
+
+    pub fn requiresBlankBeforeWrite(self: DeviceRecord) bool {
+        return !self.can_erase or self.requires_blank_before_write;
+    }
 
     pub fn supports(self: DeviceRecord, programmer: model.Programmer) bool {
         if (programmer == .auto) return true;

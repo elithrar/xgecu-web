@@ -99,11 +99,12 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
       this.state.claimed = false;
       if (this.device.opened && (this.state.openedByLibrary || this.state.poisoned)) await this.device.close();
       if (this.state.poisoned && this.device.opened) {
-        throw new XgecuWebUSBError("Failed to reset the programmer after transaction cleanup failed.", "WebUSBLifecycleFailed");
+        throw new XgecuWebUSBError("Failed to close the USB session after hardware cleanup failed. Disconnect USB power, then reload this page before reconnecting.", "WebUSBLifecycleFailed");
       }
       this.state.openedByLibrary = false;
       this.state.references = 0;
-      this.state.poisoned = false;
+      // USB close only releases the host session; it cannot establish that the
+      // chip was powered down. Preserve quarantine for this device in this page.
       this.state.sessionEstablished = false;
       this.state.detectedProgrammer = undefined;
       this.closed = true;
@@ -116,7 +117,7 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
 export class BrowserXgecuWebUSB implements XgecuWebUSB {
   constructor(
     private readonly wasm: WasmBridge,
-    private readonly usb: USBNavigatorLike = requireWebUSB(),
+    private readonly usb?: USBNavigatorLike,
     private readonly algorithmProvider?: AlgorithmProvider
   ) {}
 
@@ -130,14 +131,14 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
 
   async getProgrammers(): Promise<ProgrammerInfo[]> {
     return unwrapInternal(await resultFromPromise(async () => {
-      const devices = await this.usb.getDevices();
+      const devices = await (this.usb ?? requireWebUSB()).getDevices();
       return devices.filter(isSupportedUsbId).map(deviceInfo);
     }));
   }
 
   async requestProgrammer(): Promise<ProgrammerConnection> {
     return unwrapInternal(await resultFromPromise(async () => {
-      const device = await this.usb.requestDevice({
+      const device = await (this.usb ?? requireWebUSB()).requestDevice({
         filters: [
           { vendorId: XGECU_VENDOR_ID, productId: T48_T56_PRODUCT_ID },
           { vendorId: XGECU_VENDOR_ID, productId: T76_PRODUCT_ID }
@@ -159,6 +160,23 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       await openAndClaim(device);
       return connectionFor(device);
     }));
+  }
+
+  async identifyProgrammer(programmer: ProgrammerConnection): Promise<Exclude<ProgrammerKind, "auto">> {
+    validateConnection(programmer);
+    if (!programmer.opened) {
+      throw new XgecuWebUSBError("The programmer connection is not open.", "WebUSBLifecycleFailed");
+    }
+    const device = programmer.device;
+    return withProgrammerOperation(device, async () => {
+      await ensureReady(device);
+      const kind = await this.wasm.identifyProgrammer((transfer) => performWebUSBTransfer(device, transfer));
+      if ((device.productId === T76_PRODUCT_ID) !== (kind === "t76")) {
+        throw new XgecuWebUSBError("USB identity and programmer system information disagree.", "ProgrammerMismatch");
+      }
+      stateFor(device).detectedProgrammer = kind;
+      return kind;
+    });
   }
 
   async readROM(options: ReadROMOptions): Promise<Uint8Array> {
@@ -318,7 +336,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
 export async function createProgrammer(options: { wasmUrl?: string | URL; usb?: USBNavigatorLike; algorithmProvider?: AlgorithmProvider } = {}): Promise<XgecuWebUSB> {
   return unwrapInternal(await resultFromPromise(async () => {
     const wasm = await WasmBridge.load(options.wasmUrl);
-    return new BrowserXgecuWebUSB(wasm, options.usb ?? requireWebUSB(), options.algorithmProvider);
+    return new BrowserXgecuWebUSB(wasm, options.usb, options.algorithmProvider);
   }));
 }
 
@@ -366,21 +384,18 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
   if (forOperation && !device.opened && state.sessionEstablished) {
     throw new XgecuWebUSBError("The programmer connection was lost. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
   }
-  if (forOperation && state.poisoned) {
-    throw new XgecuWebUSBError("The programmer is in an unknown hardware state. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
+  if (state.poisoned) {
+    throw new XgecuWebUSBError("Hardware cleanup failed. Disconnect USB power, then reload this page before reconnecting.", "WebUSBLifecycleFailed");
   }
   state.lifecycleActive = true;
   let openedHere = false;
   try {
-    if (!forOperation && state.poisoned) {
-      if (device.opened && state.claimed) await device.releaseInterface?.(INTERFACE_NUMBER).catch(() => undefined);
-      state.claimed = false;
-      if (device.opened) await lifecycle("reset the programmer after transaction cleanup failed", () => device.close());
-      if (device.opened) {
-        throw new XgecuWebUSBError("The programmer remained open after reset. Disconnect and reconnect it before continuing.", "WebUSBLifecycleFailed");
-      }
+    if (state.references === 0 && state.openedByLibrary && !state.sessionEstablished) {
+      // Setup returned no wrapper, but a failed rollback may still own USB.
+      // Finish that close before allowing a new connection to acquire it.
+      if (device.opened) await lifecycle("close USB device after failed connection", () => device.close());
       state.openedByLibrary = false;
-      state.sessionEstablished = false;
+      state.claimed = false;
       state.detectedProgrammer = undefined;
     }
     if (!device.opened) {
@@ -399,14 +414,14 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
       state.claimed = true;
     }
     await ensureEndpointAlternate(device);
-    state.poisoned = false;
     state.sessionEstablished = true;
   } catch (error) {
     if (state.claimed) await device.releaseInterface?.(INTERFACE_NUMBER).catch(() => undefined);
     state.claimed = false;
     if (openedHere && device.opened) await device.close().catch(() => undefined);
     if (openedHere) {
-      state.openedByLibrary = false;
+      // A rejected close does not transfer ownership back to the caller.
+      state.openedByLibrary = device.opened;
       state.sessionEstablished = false;
     }
     throw error;

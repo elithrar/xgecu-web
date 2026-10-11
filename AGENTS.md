@@ -110,6 +110,7 @@ The workflow uses Zig 0.16.0. If Zig is not on `PATH` in an agent environment, i
 
 - Never weaken ID checks, erase/verify defaults, or size validation without explicit tests and docs.
 - Non-electrically-erasable writes must blank-check the full selected memory region immediately before programming.
+- Electrically erasable EPROMs also require a full blank check before programming, including explicit no-erase writes. Keep this catalog policy separate from EEPROM byte-rewrite capability.
 - Treat protection flags as capabilities; do not infer prior state or automatically re-protect after a write.
 - Treat overcurrent and programmer status errors as hard failures.
 - Do not make examples encourage repeated writes or unattended write loops.

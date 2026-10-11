@@ -81,7 +81,10 @@ Common codes include `WebUSBUnavailable`, `WebUSBTransferFailed`, `WebUSBLifecyc
 
 ## `createProgrammer(options?)`
 
-Loads the Wasm module and returns the high-level browser API.
+Loads the Wasm module and returns the high-level browser API. Initialization,
+`deviceList()` and `resolveDevice()` do not require WebUSB or USB permission.
+`getProgrammers()` and `requestProgrammer()` report `WebUSBUnavailable` when
+the browser does not expose WebUSB.
 
 ```ts
 const api = await createProgrammer({
@@ -158,6 +161,28 @@ if (existing) {
   } finally {
     await programmer.close();
   }
+}
+```
+
+## `identifyProgrammer(programmer)`
+
+Returns `"t48"`, `"t56"` or `"t76"` from the connected programmer's system-info
+response, without starting a chip transaction. T48 and T56 share a USB product ID;
+USB names and IDs alone do not identify the model. Use this before enabling
+model-specific actions. This identifies the programmer, not the inserted chip.
+
+The connection must be open and owned by this API. The query uses the same
+per-device operation lock and quarantine checks as ROM operations. Unsupported,
+bootloader, short, and contradictory model responses fail closed. ROM operations
+still validate the model independently before accessing the chip.
+
+```ts
+const programmer = await api.requestProgrammer();
+try {
+  const kind = await api.identifyProgrammer(programmer);
+  console.log(kind, api.resolveDevice("W27C257@DIP28", kind));
+} finally {
+  await programmer.close();
 }
 ```
 
@@ -286,6 +311,7 @@ await api.writeROM({
 
 `erase` and `verify` default to `true`. T76 writes require `verify: true` because that streaming protocol has no per-block status response; explicitly disabling it throws `VerifyRequired` after programmer identification and before BEGIN. Empty write data is rejected before any WebUSB operation starts. Because the protocol erase command does not identify a memory region, erase writes are restricted to `memory: "code"` and `data` must exactly match the code-memory size. Data/user-memory and other partial programming require explicit `erase: false`. After an electrical erase, the operation reads the full selected memory region and rejects the write unless every byte equals `blankValue`.
 `DeviceSummary.canErase` reports whether the programmer can electrically erase the target. `writeROM` rejects erase requests when it is false. A UV EPROM must be externally erased and written with `erase: false`; immediately before programming, the operation reads the full selected memory region and throws `TargetNotBlank` unless every byte equals `blankValue`.
+Electrically erasable EPROM profiles such as W27C257 also require a blank target even with explicit `erase: false`; the catalog records this separately from erase capability. Their full selected region is checked before programming, including prefix writes. EEPROM profiles such as AT28C64B retain in-place rewriting. W27E257 is withheld pending resolution of its voltage evidence.
 `skipIdCheck` is available for bring-up or devices without catalogued IDs, but should not be enabled for normal writes.
 `eraseNumFuses` and `erasePld` default to `0`; most ROM workflows should leave them at the default unless catalog/protocol work for a specific target requires non-zero values.
 Hardware-affecting options are runtime-validated. Unknown enum values, non-boolean flags, and fuse/PLD values outside the integer range 0-255 throw `InvalidInput` before USB work begins.
@@ -303,5 +329,5 @@ Most applications should use `createProgrammer()`. The package also exports:
 - `performWebUSBTransfer()` for mapping a Wasm transfer request to `USBDevice.transferOut()`/`transferIn()`.
 - Error classes: `XgecuWebUSBError`, `WebUSBUnavailableError`, and `WebUSBTransferError`.
 
-Wasm operation handles are single-use. `WasmBridge.runOperation()` rejects duplicate runners and always destroys its handle in a `finally` block. Call `disposeOperation()` for an operation that was started but will not be run. If transaction cleanup fails after an operation error, the high-level API closes and quarantines the programmer until an explicit reconnect.
+Wasm operation handles are opaque, single-use tokens owned by the creating bridge, not raw Wasm pointers. A consumed or disposed token cannot run or dispose a later operation even when the Wasm allocator reuses its address. `WasmBridge.runOperation()` rejects duplicate runners and always destroys its handle in a `finally` block. Call `disposeOperation()` for an operation that was started but will not be run. If transaction cleanup fails after an operation error, the high-level API attempts to close the USB session and quarantines that device for the page lifetime. A software reconnect cannot clear this state. Disconnect USB power, then reload the page before reconnecting; the browser cannot verify that physical power was removed.
 The native Zig `Transport` vtable reports the number of bytes transferred for command and payload I/O. Its public wrappers reject short sends, writes, and reads as `transport.Error.Io`, so adapters must not report success for a partial transfer.

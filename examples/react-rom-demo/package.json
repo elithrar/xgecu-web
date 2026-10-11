@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "vitest run --config vitest.config.ts",
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview"

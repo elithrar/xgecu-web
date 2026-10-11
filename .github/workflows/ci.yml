@@ -50,5 +50,8 @@ jobs:
       - name: Demo typecheck
         run: pnpm run demo:typecheck
 
+      - name: Demo tests
+        run: pnpm run demo:test
+
       - name: Demo build
         run: pnpm run demo:build

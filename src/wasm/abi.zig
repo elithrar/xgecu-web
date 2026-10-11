@@ -259,6 +259,10 @@ export fn mp_programmer_from_system_info(data_ptr: u32, data_len: u32) u32 {
         _ = setError("unsupported programmer system info");
         return 0;
     };
+    if (info.status == .bootloader) {
+        _ = setError("programmer is in bootloader mode");
+        return 0;
+    }
     return switch (info.programmer) {
         .t48 => 1,
         .t56 => 2,
@@ -1105,7 +1109,7 @@ fn afterChipIdState(op: *Operation) State {
             .send_t76_protect_off
         else if (op.erase)
             .send_erase
-        else if (!op.device.can_erase)
+        else if (op.device.requiresBlankBeforeWrite())
             .blank_send_read_cmd
         else if (op.unprotect_before and op.programmer != .t76)
             .send_protect_off

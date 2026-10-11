@@ -88,7 +88,7 @@ export declare class WasmBridge {
         t76Algorithm?: Uint8Array;
     }): WasmOperationHandle;
     disposeOperation(handle: WasmOperationHandle): void;
-    runOperation(handle: WasmOperationHandle, performTransfer: UsbTransferHandler, options?: RunOperationOptions): Promise<Uint8Array>;
+    runOperation(token: WasmOperationHandle, performTransfer: UsbTransferHandler, options?: RunOperationOptions): Promise<Uint8Array>;
     memoryBytes(ptr: number, len: number): Uint8Array;
     private withBytes;
     private resultBytes;

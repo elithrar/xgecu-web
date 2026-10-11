@@ -113,6 +113,8 @@ export interface XgecuWebUSB {
     getProgrammers(): Promise<ProgrammerInfo[]>;
     requestProgrammer(): Promise<ProgrammerConnection>;
     connectProgrammer(device: USBDeviceLike): Promise<ProgrammerConnection>;
+    /** Query system information on an open connection; does not power a target chip. */
+    identifyProgrammer(programmer: ProgrammerConnection): Promise<Exclude<ProgrammerKind, "auto">>;
     checkPinContacts(options: PinCheckOptions): Promise<PinCheckResult>;
     readROM(options: ReadROMOptions): Promise<Uint8Array>;
     writeROM(options: WriteROMOptions): Promise<void>;

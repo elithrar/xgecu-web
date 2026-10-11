@@ -176,3 +176,49 @@ test "empty T48 search exposes every sourced ROM profile" {
     try std.testing.expectEqual(devices.len, found.len);
     for (found) |device| try std.testing.expect(device.supports_t48);
 }
+
+test "Winbond 32 KiB DIP profile preserves its sourced T48 descriptor" {
+    const t48 = @import("../programmer/t48.zig");
+    const bytes = @import("../programmer/protocol_bytes.zig");
+    for ([_][]const u8{ "W27C257-10", "W27C257-12" }) |name| {
+        const voltage: u8 = 0x00;
+        const device = try find(name, .t48);
+        try std.testing.expectEqual(@as(u32, 32768), device.code_memory_size);
+        try std.testing.expectEqual(@as(u32, 0xda02), device.chip_id);
+        try std.testing.expectEqual(@as(u8, 2), device.chip_id_bytes_count);
+        try std.testing.expectEqual(@as(u16, 128), device.write_buffer_size);
+        try std.testing.expectEqual(@as(u32, 0x3211), device.variant);
+        try std.testing.expectEqual(@as(u32, 0x0c16), device.pin_map);
+        try std.testing.expectEqual(@as(u8, 0xff), device.blank_value);
+        try std.testing.expect(device.can_erase);
+        try std.testing.expect(device.requiresBlankBeforeWrite());
+        try std.testing.expect(device.pin_check == null);
+        try std.testing.expect(!device.supports(.t56));
+        try std.testing.expect(!device.supports(.t76));
+        const flags = model.decodeFlags(device.flags_raw, device.voltages_raw, device.chip_info, device.protocol_id);
+        try std.testing.expect(flags.has_chip_id);
+        try std.testing.expect(!flags.off_protect_before and !flags.protect_after);
+
+        // INFOIC2PLUS descriptor encoded for T48, not a captured hardware trace.
+        var expected = [_]u8{0} ** bytes.packet.begin_len;
+        @memcpy(expected[0..8], &[_]u8{ 0x03, 0x07, 0x11, 0x00, voltage, 0x00, 0x00, 0x16 });
+        expected[12] = 100;
+        expected[17] = 0x80;
+        expected[22] = voltage;
+        expected[43] = 28;
+        expected[45] = 4;
+        expected[56] = 0x78;
+        var actual: [bytes.packet.begin_len]u8 = undefined;
+        t48.writeBeginPacket(&actual, .t48, device.descriptor(.t48));
+        try std.testing.expectEqualSlices(u8, &expected, &actual);
+    }
+    for ([_][]const u8{ "W27C257P-12", "W27E257", "W27E257@DIP28", "W27E257-10", "W27E257-12", "W27E257-15", "W27E257P-12", "W27E257@PLCC32", "W27E512", "27C256" }) |name| {
+        try std.testing.expectError(Error.DeviceNotFound, find(name, .t48));
+    }
+}
+
+test "blank-write policy distinguishes UV EPROMs from rewriteable EEPROMs" {
+    try std.testing.expect((try find("M27C64A", .t48)).requiresBlankBeforeWrite());
+    try std.testing.expect((try find("M27C256B", .t48)).requiresBlankBeforeWrite());
+    try std.testing.expect(!(try find("AT28C64B", .t48)).requiresBlankBeforeWrite());
+}

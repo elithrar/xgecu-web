@@ -1,4 +1,4 @@
-import { AlgorithmProvider, DeviceDetail, DeviceListQuery, DeviceSummary, PinCheckOptions, PinCheckResult, ProgrammerConnection, ProgrammerInfo, ReadROMOptions, USBDeviceLike, USBNavigatorLike, WriteROMOptions, XgecuWebUSB } from './types';
+import { AlgorithmProvider, DeviceDetail, DeviceListQuery, DeviceSummary, PinCheckOptions, PinCheckResult, ProgrammerConnection, ProgrammerInfo, ProgrammerKind, ReadROMOptions, USBDeviceLike, USBNavigatorLike, WriteROMOptions, XgecuWebUSB } from './types';
 import { WasmBridge, UsbTransfer } from './wasm';
 export declare class WebUSBProgrammerConnection implements ProgrammerConnection {
     readonly device: USBDeviceLike;
@@ -16,14 +16,15 @@ export declare class WebUSBProgrammerConnection implements ProgrammerConnection 
 }
 export declare class BrowserXgecuWebUSB implements XgecuWebUSB {
     private readonly wasm;
-    private readonly usb;
+    private readonly usb?;
     private readonly algorithmProvider?;
-    constructor(wasm: WasmBridge, usb?: USBNavigatorLike, algorithmProvider?: AlgorithmProvider | undefined);
+    constructor(wasm: WasmBridge, usb?: USBNavigatorLike | undefined, algorithmProvider?: AlgorithmProvider | undefined);
     deviceList(query?: DeviceListQuery): DeviceSummary[];
     resolveDevice(name: string, programmer?: DeviceListQuery["programmer"]): DeviceDetail | null;
     getProgrammers(): Promise<ProgrammerInfo[]>;
     requestProgrammer(): Promise<ProgrammerConnection>;
     connectProgrammer(device: USBDeviceLike): Promise<ProgrammerConnection>;
+    identifyProgrammer(programmer: ProgrammerConnection): Promise<Exclude<ProgrammerKind, "auto">>;
     readROM(options: ReadROMOptions): Promise<Uint8Array>;
     checkPinContacts(options: PinCheckOptions): Promise<PinCheckResult>;
     writeROM(options: WriteROMOptions): Promise<void>;
