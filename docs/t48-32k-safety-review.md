@@ -16,6 +16,7 @@ and WorkbenchOS `162319b98ff1ac943625cad0cc7d899fe2a43b73`.
 | High, shared hardware-state recovery | After an END cleanup failure, software close/reopen cleared quarantine and allowed another operation without any hardware recovery command. WebUSB close releases the host session; it does not establish socket power-down. | Quarantine persists for that USBDevice for the page lifetime, across wrappers and API instances. Require the operator to disconnect USB power, then reload before reconnecting. UI guidance follows the same contract. |
 | Medium, destructive programming guard | `canErase=true` allowed Winbond `erase:false` writes to skip blank checking, although EPROM programming only changes 1 to 0. A simulated `AA` target written with `55` became `00` before verification failed. | Separate `requiresBlankBeforeWrite` policy from electrical erase capability. Native Zig and Wasm check the entire selected region before programming, including prefix writes. AT28C64B byte-rewrite behavior is unchanged. |
 | Medium, shared connection ownership | WorkbenchOS discarded a disconnected wrapper without closing it. A reconnect added another reference, so later Disconnect could leave USB open. | Await operation completion, close the discarded wrapper, and block reconnect during cleanup. A delayed-close regression covers the 32 KiB path. |
+| Medium, exported low-level operation ownership | A completed or disposed read handle could run or destroy a subsequently prepared write when the Wasm allocator reused its address. WorkbenchOS creates and runs handles internally and did not expose this stale-handle sequence. | Replace pointer-valued public handles with non-reused JavaScript tokens. Real compiled-Wasm regressions reproduce both completed and disposed cases and require rejection before USB, while the new write remains usable. |
 | Low, documentation accuracy | ST documentation named native `EraseUnsupported` as the browser error. | Document browser `InvalidInput` and native `EraseUnsupported` separately; electrical erase remains rejected. |
 
 The voltage gate above is a deliberately conservative response to unresolved
@@ -34,8 +35,13 @@ explains why both requested speed grades share the existing profile.
 2. Three fresh independent reviewers examined the fixes and remaining lifecycle,
    profile/blank-write, and UI surfaces. This pass found a test assertion using
    the wrong start-operation error text and stale UI reconnect guidance; both
-   were corrected and independently rechecked. The final pass reported no
-   further validated actionable findings in this reviewed scope.
+   were corrected and independently rechecked. That pass reported no
+   further validated actionable findings in its reviewed scope.
+3. A fresh integration pass reviewed the exported library, actual WorkbenchOS
+   component, and installed production artifacts independently. It found the
+   low-level stale-handle issue above, which was reproduced and fixed. The UI
+   and artifact reviewers found no additional blocking defect. A fresh focused
+   reviewer then examined the token fix and its lifecycle coverage.
 
 Committed regression coverage includes:
 
@@ -60,6 +66,29 @@ They observed either completed cleanup or a cleanup-failure notification and
 single-use handle destruction. Another 90 cases covered status/overcurrent
 injection before programming and odd-size no-erase prefixes with blank/nonblank
 tails. These review probes use simulated USB, not physical chips.
+
+## Final WorkbenchOS integration evidence
+
+The production Worker was served locally, and Chromium exercised the rendered
+ChipProgrammer with its actual bundled JavaScript and fetched Wasm. Only the
+`navigator.usb` boundary was simulated; no physical T48 or chip was attached.
+Fourteen scenarios covered W27C257, ST -10F1 and mobile -12F1 via the shared
+M27C256B profile; exact-size file gates; byte-exact downloaded backups; write
+confirmation/cancellation; erase policy; all 256 programming blocks; full-region
+blank checking; built-in verification and independent SHA-256 readback;
+ID/short-read/erase/verification failures; read cancellation; disconnect,
+reconnect and persistent quarantine. No failure claimed full success. Every
+successful image and backup was exactly 32,768 bytes.
+
+Independent review probes additionally covered 10,594 injected lifecycle faults,
+180 withheld-W27E API requests, and 17 UI state/error cases. Production client
+and server package chunks each passed 17 modeled-USB probes using the shipped
+Wasm. Installed artifacts were compared byte-for-byte with the exact dependency
+archive and the archive integrity checked against the lockfile. Worker HTTP
+checks covered hashed JavaScript/Wasm content, MIME types, cache revalidation,
+missing-Wasm 404s, and lazy loading. These are software and artifact checks;
+encoded voltage words and successful simulated transfers do not measure pin
+voltages, pulse timing, programming margin, or retention.
 
 ## Existing comparison-path findings outside this change
 

@@ -79,6 +79,24 @@ const writeOptions = {
   unprotectBefore: false, protectAfter: false,
 };
 
+it.each(["disposed", "completed"])("does not reuse a %s read handle for a prepared 32 KiB write", async (state) => {
+  const api = await bridge();
+  const device = "W27C257";
+  const oldRead = api.startReadROM({ ...writeOptions, device });
+  if (state === "disposed") api.disposeOperation(oldRead);
+  else await api.runOperation(oldRead, t48().transfer);
+
+  const fake = t48();
+  const image = new Uint8Array(32768).fill(0x5a);
+  const write = api.startWriteROM({ ...writeOptions, device, data: image });
+  await expect(api.runOperation(oldRead, fake.transfer)).rejects.toMatchObject({ code: "InvalidInput" });
+  api.disposeOperation(oldRead);
+  expect(fake.commands).toHaveLength(0);
+  await api.runOperation(write, fake.transfer);
+  expect(fake.writes).toHaveLength(256);
+  expect(fake.memory).toEqual(image);
+});
+
 describe("W27C257 shipped T48 profile", () => {
   const device = "W27C257";
   it("reads and rewrites all 32768 bytes with erase, blank check and verification", async () => {
