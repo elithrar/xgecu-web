@@ -90,6 +90,39 @@ missing-Wasm 404s, and lazy loading. These are software and artifact checks;
 encoded voltage words and successful simulated transfers do not measure pin
 voltages, pulse timing, programming margin, or retention.
 
+## Shared connection ownership audit
+
+An expanded audit traced connection cleanup across every catalog profile, the
+high-level browser API and both React consumers. Cleanup is per USB device and
+connection wrapper, not per chip. The existing 8 KiB profiles use the same SDK
+operation/close/quarantine code and WorkbenchOS post-write verification flow as
+the 32 KiB profiles. Model-specific protocol cleanup still runs through the
+shared operation lifecycle.
+
+Two equivalent ownership defects were reproduced using the actual built SDK
+and Wasm with simulated USB failures:
+
+- After a failed connection probe or component unmount, the UI discarded a
+  wrapper whose `close()` rejected. Reconnecting created another reference;
+  closing it left the forgotten owner and USB session open. WorkbenchOS and the
+  standalone demo now retain failed/in-flight closes across component lifetimes,
+  block hardware work while cleanup is pending, and retry before reconnecting.
+- SDK connection setup swallowed a rollback-close failure and marked USB as no
+  longer library-owned. A later successful connect/close therefore skipped
+  physical USB close. Setup now retains that ownership and finishes orphaned
+  cleanup before any new connection is established. Externally opened USB devices
+  remain caller-owned.
+
+The pre-fix setup reproducer failed for T48, T56 and T76 through both
+`requestProgrammer()` and `connectProgrammer()`. Configuration and claim failures
+produced `WebUSBLifecycleFailed`, followed by an injected rollback `NetworkError`.
+After a later successful connection close, USB was still open. Regression tests
+also cover alternate-selection failure, repeated cleanup failure, new API
+instances, concurrent close attempts and operation settlement before unmount
+cleanup. Successful cleanup now leaves USB closed; failed transaction cleanup
+still preserves page-lifetime quarantine. None of these checks measures socket
+power or replaces physical qualification.
+
 ## Existing comparison-path findings outside this change
 
 Per the clarified scope, neither of these older 8 KiB issues was modified:

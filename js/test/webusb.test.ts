@@ -521,6 +521,66 @@ describe("BrowserXgecuWebUSB", () => {
     expect(device.opened).toBe(false);
   });
 
+  it.each(["configuration", "claim", "alternate"] as const)(
+    "retains failed %s rollback ownership and retries cleanup before reconnecting",
+    async (phase) => {
+      const device = new FakeDevice();
+      const close = vi.spyOn(device, "close");
+      const open = vi.spyOn(device, "open");
+      const setupError = new DOMException("setup failed", "NetworkError");
+      if (phase === "configuration") vi.spyOn(device, "selectConfiguration").mockRejectedValueOnce(setupError);
+      if (phase === "claim") device.claimInterface.mockRejectedValueOnce(setupError);
+      if (phase === "alternate") {
+        const endpoints = [1, 2].flatMap((endpointNumber) => ["in", "out"].map((direction) => ({
+          endpointNumber, direction: direction as "in" | "out", type: "bulk" as const
+        })));
+        device.configuration = { configurationValue: 1, interfaces: [{
+          interfaceNumber: 0,
+          alternate: { alternateSetting: 0, endpoints: [] },
+          alternates: [{ alternateSetting: 1, endpoints }]
+        }] };
+        device.selectAlternateInterface.mockRejectedValueOnce(setupError);
+      }
+      device.failClose = true;
+      const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+      await expect(api.requestProgrammer()).rejects.toMatchObject({ code: "WebUSBLifecycleFailed", cause: setupError });
+      expect(device.opened).toBe(true);
+      expect(close).toHaveBeenCalledTimes(1);
+      const claimsAfterFailure = device.claimInterface.mock.calls.length;
+
+      // The state belongs to the physical device, including across API instances.
+      const retryApi = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+      await expect(retryApi.connectProgrammer(device)).rejects.toMatchObject({
+        code: "WebUSBLifecycleFailed", message: "Failed to close USB device after failed connection."
+      });
+      expect(close).toHaveBeenCalledTimes(2);
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(device.claimInterface).toHaveBeenCalledTimes(claimsAfterFailure);
+
+      device.failClose = false;
+      const connection = await retryApi.connectProgrammer(device);
+      expect(close).toHaveBeenCalledTimes(3);
+      expect(open).toHaveBeenCalledTimes(2);
+      await connection.close();
+      expect(close).toHaveBeenCalledTimes(4);
+      expect(device.opened).toBe(false);
+    }
+  );
+
+  it("does not take ownership of an externally opened device when setup fails", async () => {
+    const device = new FakeDevice();
+    device.opened = true;
+    device.failClaim = true;
+    const close = vi.spyOn(device, "close");
+    const api = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+    await expect(api.connectProgrammer(device)).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+    device.failClaim = false;
+    const connection = await api.connectProgrammer(device);
+    await connection.close();
+    expect(close).not.toHaveBeenCalled();
+    expect(device.opened).toBe(true);
+  });
+
   it("routes writeROM with safe defaults", async () => {
     const device = new FakeDevice();
     const wasm = fakeWasm();

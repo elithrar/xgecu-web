@@ -390,6 +390,14 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
   state.lifecycleActive = true;
   let openedHere = false;
   try {
+    if (state.references === 0 && state.openedByLibrary && !state.sessionEstablished) {
+      // Setup returned no wrapper, but a failed rollback may still own USB.
+      // Finish that close before allowing a new connection to acquire it.
+      if (device.opened) await lifecycle("close USB device after failed connection", () => device.close());
+      state.openedByLibrary = false;
+      state.claimed = false;
+      state.detectedProgrammer = undefined;
+    }
     if (!device.opened) {
       state.claimed = false;
       state.detectedProgrammer = undefined;
@@ -412,7 +420,8 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
     state.claimed = false;
     if (openedHere && device.opened) await device.close().catch(() => undefined);
     if (openedHere) {
-      state.openedByLibrary = false;
+      // A rejected close does not transfer ownership back to the caller.
+      state.openedByLibrary = device.opened;
       state.sessionEstablished = false;
     }
     throw error;

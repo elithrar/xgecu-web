@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
@@ -10,6 +10,7 @@ import { Select } from "@cloudflare/kumo/components/select";
 import { Text } from "@cloudflare/kumo/components/text";
 import { createProgrammer } from "xgecu-web";
 import type { DeviceSummary, ProgrammerConnection, RomProgressEvent, XgecuWebUSB } from "xgecu-web";
+import { closeProgrammerConnection, hasPendingProgrammerCloses, retryProgrammerCloses, subscribeProgrammerCleanup } from "./programmer-cleanup";
 import "@cloudflare/kumo/styles/standalone";
 import "./styles.css";
 
@@ -49,7 +50,11 @@ function App() {
   const activeOperation = useRef<Promise<unknown> | null>(null);
   const activeToken = useRef<symbol | null>(null);
   const pendingConnection = useRef<ProgrammerConnection | null>(null);
+  const programmerRef = useRef<ProgrammerConnection | null>(null);
+  const mounted = useRef(false);
   const fileSequence = useRef(0);
+  const cleanupRequired = useSyncExternalStore(subscribeProgrammerCleanup, hasPendingProgrammerCloses);
+  const hardwareReady = Boolean(programmer?.opened && !cleanupRequired);
 
   function appendLog(level: LogEntry["level"], event: string, fields: Record<string, unknown> = {}) {
     const entry = logEntry(level, event, fields);
@@ -79,17 +84,17 @@ function App() {
   }, []);
 
   useEffect(() => {
+    mounted.current = true;
     return () => {
+      mounted.current = false;
       activeAbort.current?.abort();
       const settled = activeOperation.current ?? Promise.resolve();
-      void settled.finally(async () => {
-        await Promise.allSettled([
-          pendingConnection.current?.close(),
-          programmer?.close()
-        ]);
-      }).catch(() => undefined);
+      for (const connection of new Set([pendingConnection.current, programmerRef.current])) {
+        if (connection) void closeProgrammerConnection(connection, settled).catch(() => undefined);
+      }
+      programmerRef.current = null;
     };
-  }, [programmer]);
+  }, []);
 
   const deviceList = useMemo(() => {
     if (!api) return { devices: [] as DeviceSummary[], error: null as Error | null };
@@ -109,7 +114,7 @@ function App() {
     backup && selectedSummary && backup.data.every((byte) => byte === selectedSummary.blankValue)
   );
   const canWrite = Boolean(
-    api && programmer && writeImage && backup && !busy &&
+    api && hardwareReady && writeImage && backup && !busy &&
     backup.target === selectedDevice && backup.connectionId === connectionSequence.current &&
     writeImage.byteLength === backup.data.byteLength &&
     (selectedSummary?.canErase || backupIsBlank) && confirmWrite
@@ -144,12 +149,26 @@ function App() {
     setStatus("Requesting WebUSB device...");
     appendLog("info", "programmer_request_started");
     try {
+      if (hasPendingProgrammerCloses()) {
+        await retryProgrammerCloses();
+        programmerRef.current = null;
+        if (mounted.current) {
+          setProgrammer(null);
+          setBackup(null);
+          setConfirmWrite(false);
+          setStatus("Previous USB connection closed. Connect the programmer to continue.");
+        }
+        return;
+      }
       const operation = api.requestProgrammer();
       activeOperation.current = operation;
       const connection = await operation;
       pendingConnection.current = connection;
-      await programmer?.close();
+      if (!mounted.current) return;
+      if (programmerRef.current) await closeProgrammerConnection(programmerRef.current);
+      if (!mounted.current) return;
       connectionSequence.current += 1;
+      programmerRef.current = connection;
       setProgrammer(connection);
       pendingConnection.current = null;
       setBackup(null);
@@ -162,7 +181,14 @@ function App() {
       appendLog("error", "programmer_connection_failed", errorFields(error));
     } finally {
       if (pendingConnection.current) {
-        await pendingConnection.current.close().catch(() => undefined);
+        try {
+          await closeProgrammerConnection(pendingConnection.current);
+        } catch (error) {
+          if (mounted.current) {
+            setStatus(`USB close failed: ${errorMessage(error)} Retry disconnect before connecting again.`);
+            appendLog("error", "programmer_close_failed", errorFields(error));
+          }
+        }
         pendingConnection.current = null;
       }
       if (activeToken.current === token) {
@@ -173,8 +199,31 @@ function App() {
     }
   }
 
+  async function disconnect() {
+    if (activeToken.current || !programmerRef.current) return;
+    const token = Symbol("disconnect");
+    activeToken.current = token;
+    setBusy(true);
+    setBackup(null);
+    setConfirmWrite(false);
+    try {
+      await closeProgrammerConnection(programmerRef.current);
+      programmerRef.current = null;
+      setProgrammer(null);
+      setStatus("Programmer disconnected.");
+    } catch (error) {
+      setStatus(`USB close failed: ${errorMessage(error)} Retry disconnect before connecting again.`);
+      appendLog("error", "programmer_close_failed", errorFields(error));
+    } finally {
+      if (activeToken.current === token) {
+        activeToken.current = null;
+        setBusy(false);
+      }
+    }
+  }
+
   async function readRom() {
-    if (!api || !programmer || activeToken.current) return;
+    if (!api || !programmer || !hardwareReady || activeToken.current) return;
     const token = Symbol("read");
     activeToken.current = token;
     const target = selectedDevice;
@@ -243,7 +292,7 @@ function App() {
   }
 
   async function checkPins() {
-    if (!api || !programmer || !selectedSummary?.supportsPinCheck || activeToken.current) return;
+    if (!api || !programmer || !hardwareReady || !selectedSummary?.supportsPinCheck || activeToken.current) return;
     const token = Symbol("pin-check");
     activeToken.current = token;
     const controller = new AbortController();
@@ -295,7 +344,7 @@ function App() {
   }
 
   async function writeRom() {
-    if (!api || !programmer || !writeImage || !backup || !selectedSummary || !confirmWrite || activeToken.current) return;
+    if (!api || !programmer || !hardwareReady || !writeImage || !backup || !selectedSummary || !confirmWrite || activeToken.current) return;
     if (backup.target !== selectedDevice || backup.connectionId !== connectionSequence.current) return;
     if (writeImage.byteLength !== backup.data.byteLength) {
       setStatus(`Image size mismatch: expected ${backup.data.byteLength} bytes, got ${writeImage.byteLength}.`);
@@ -408,16 +457,19 @@ function App() {
       <LayerCard className="panel">
         <LayerCard.Secondary className="panel-heading">
           <Text variant="heading3" as="h2">Programmer</Text>
-          <Badge variant={programmer ? "success" : "neutral"} appearance="dot">
-            {programmer ? "Connected" : "Disconnected"}
+          <Badge variant={hardwareReady ? "success" : "neutral"} appearance="dot">
+            {cleanupRequired ? "Cleanup required" : hardwareReady ? "Connected" : "Disconnected"}
           </Badge>
         </LayerCard.Secondary>
         <LayerCard.Primary className="panel-body connect-panel">
           <Button variant="primary" disabled={!api || busy} loading={busy && !programmer} onClick={() => void connect()}>
-            Connect programmer
+            {cleanupRequired ? "Retry disconnect" : "Connect programmer"}
+          </Button>
+          <Button variant="secondary" disabled={!programmer || busy || cleanupRequired} onClick={() => void disconnect()}>
+            Disconnect
           </Button>
           <Text variant="secondary">
-            {programmer ? `Connected: ${programmer.productName ?? programmer.serialNumber ?? "T48"}` : "No programmer connected"}
+            {cleanupRequired ? "USB connection needs closing." : programmer ? `Connected: ${programmer.productName ?? programmer.serialNumber ?? "T48"}` : "No programmer connected"}
           </Text>
         </LayerCard.Primary>
       </LayerCard>
@@ -448,7 +500,7 @@ function App() {
           )}
           <Button
             variant="secondary"
-            disabled={!api || !programmer || busy || !selectedSummary?.supportsPinCheck}
+            disabled={!api || !hardwareReady || busy || !selectedSummary?.supportsPinCheck}
             onClick={() => void checkPins()}
           >
             Check pin contacts
@@ -464,7 +516,7 @@ function App() {
           <Text variant="heading3" as="h2">Read Backup</Text>
         </LayerCard.Secondary>
         <LayerCard.Primary className="panel-body actions">
-          <Button variant="primary" disabled={!api || !programmer || busy} onClick={() => void readRom()}>
+          <Button variant="primary" disabled={!api || !hardwareReady || busy} onClick={() => void readRom()}>
             Read ROM
           </Button>
           <LinkButton

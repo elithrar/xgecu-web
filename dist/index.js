@@ -1028,9 +1028,9 @@ async function I(t, n = !1) {
 	r.lifecycleActive = !0;
 	let i = !1;
 	try {
-		t.opened || (r.claimed = !1, r.detectedProgrammer = void 0, await $("open USB device", () => t.open()), r.openedByLibrary = !0, i = !0), t.configuration?.configurationValue !== j && (await $("select USB configuration 1", () => t.selectConfiguration(j)), r.claimed = !1), r.claimed ||= (await $("claim USB interface 0", () => t.claimInterface(A)), !0), await Qe(t), r.sessionEstablished = !0;
+		r.references === 0 && r.openedByLibrary && !r.sessionEstablished && (t.opened && await $("close USB device after failed connection", () => t.close()), r.openedByLibrary = !1, r.claimed = !1, r.detectedProgrammer = void 0), t.opened || (r.claimed = !1, r.detectedProgrammer = void 0, await $("open USB device", () => t.open()), r.openedByLibrary = !0, i = !0), t.configuration?.configurationValue !== j && (await $("select USB configuration 1", () => t.selectConfiguration(j)), r.claimed = !1), r.claimed ||= (await $("claim USB interface 0", () => t.claimInterface(A)), !0), await Qe(t), r.sessionEstablished = !0;
 	} catch (e) {
-		throw r.claimed && await t.releaseInterface?.(A).catch(() => void 0), r.claimed = !1, i && t.opened && await t.close().catch(() => void 0), i && (r.openedByLibrary = !1, r.sessionEstablished = !1), e;
+		throw r.claimed && await t.releaseInterface?.(A).catch(() => void 0), r.claimed = !1, i && t.opened && await t.close().catch(() => void 0), i && (r.openedByLibrary = t.opened, r.sessionEstablished = !1), e;
 	} finally {
 		r.lifecycleActive = !1;
 	}

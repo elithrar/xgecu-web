@@ -38,26 +38,23 @@ Supported programmer hardware is limited to T48/T56 (`0xa466:0x0a53`) and T76 (`
 The session probe also rejects bootloader mode before ROM operations begin.
 The system-info probe requests the full 80-byte response buffer. A valid 63-byte T48 short packet is accepted by the protocol parser, while T56 can return the full response without truncation.
 
-Example transfer loop shape:
+Use the managed browser API to keep transfer execution, operation locking and
+cleanup quarantine under the same owner:
 
 ```ts
-import { BrowserXgecuWebUSB, WasmBridge, performWebUSBTransfer } from "xgecu-web";
+import { createProgrammer } from "xgecu-web";
 
-const wasm = await WasmBridge.load();
-const api = new BrowserXgecuWebUSB(wasm);
+const api = await createProgrammer();
 const programmer = await api.requestProgrammer();
 
 try {
-  const handle = wasm.startReadROM({
-    programmer: "auto",
+  const bytes = await api.readROM({
+    programmer,
+    programmerKind: "t48",
     device: "AT28C64B@DIP28",
     memory: "code",
     skipIdCheck: false,
     continueOnIdMismatch: false
-  });
-
-  const bytes = await wasm.runOperation(handle, (transfer) => {
-    return performWebUSBTransfer(programmer.device, transfer);
   });
 
   console.log(`Read ${bytes.byteLength} bytes`);
@@ -66,8 +63,24 @@ try {
 }
 ```
 
-Most browser apps should call `api.checkPinContacts()`, `api.readROM()`, and `api.writeROM()` instead of using this lower-level loop directly.
+The lower-level `WasmBridge.runOperation()` accepts an arbitrary transport
+callback and does not own a WebUSB connection. It does not inherit the managed
+API's operation lock or device quarantine. Custom transports must implement
+serialization, connection ownership, and persistent quarantine when
+`onCleanupFailure` fires. Do not mix direct Wasm operations with managed USB
+operations on the same programmer. A consumed Wasm handle only releases host
+memory; it does not prove successful hardware cleanup.
+
+When `ProgrammerConnection.close()` rejects, retain that wrapper and retry its
+close before opening another connection. This also applies to component unmount
+and failed connection replacement; dropping the wrapper loses an outstanding
+SDK reference. Wait for active operations to settle before closing. The React
+demo retains failed closes outside component lifetime and offers an explicit
+retry. If initial connection setup fails and its rollback close also fails, the
+SDK retains ownership of the open USB session and retries that close before
+returning a connection on a subsequent request. Neither recovery path clears
+quarantine from failed chip-transaction cleanup.
 
 `performWebUSBTransfer()` validates WebUSB transfer statuses and exact OUT byte counts. Successful short IN packets are passed to Wasm because WebUSB's requested IN length is a maximum; the protocol state machine validates the minimum bytes required for each response. Programmer names, manufacturer names, and serial numbers are trimmed at the first NUL from USB string descriptors. `WebUSBProgrammerConnection.close()` releases interface 0 and closes devices opened by this API after all shared connection references are closed.
 High-level browser APIs serialize programmer operations per physical programmer and throw package-owned `XgecuWebUSBError` objects for expected failures.
-ROM operations send a final `end_transaction` transfer on normal completion and attempt an `end_transaction` during abort or transfer failure cleanup. T76 operations additionally reset the FPGA; T48 pin checks reset all pin drivers instead. A failed cleanup quarantines the USB device for the page lifetime, including new connections to the same device. Disconnect USB power, then reload the page before reconnecting. [WebUSB `close()`](https://wicg.github.io/webusb/#dom-usbdevice-close) only ends the host session; it does not prove that chip power is off. Physical power removal remains the operator's responsibility. Each low-level Wasm operation handle can be run once; dispose an unstarted handle with `disposeOperation()`.
+ROM operations send a final `end_transaction` transfer on normal completion and attempt an `end_transaction` during abort or transfer failure cleanup. T76 operations additionally reset the FPGA; T48 pin checks reset all pin drivers instead. A failed cleanup through the high-level API quarantines the USB device for the page lifetime, including new connections to the same device. Disconnect USB power, then reload the page before reconnecting. [WebUSB `close()`](https://wicg.github.io/webusb/#dom-usbdevice-close) only ends the host session; it does not prove that chip power is off. Physical power removal remains the operator's responsibility. Each low-level Wasm operation handle can be run once; dispose an unstarted handle with `disposeOperation()`.
