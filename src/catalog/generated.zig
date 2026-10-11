@@ -122,6 +122,27 @@ const at27c512r_dip28_programmers = [_]model.Programmer{
     .t76,
 };
 
+const w27c257_dip28_aliases = [_][]const u8{
+    "W27C257",
+    "W27C257@DIP28",
+    "W27C257-10",
+    "W27C257-12",
+};
+const w27c257_dip28_programmers = [_]model.Programmer{
+    .t48,
+};
+
+const w27e257_dip28_aliases = [_][]const u8{
+    "W27E257",
+    "W27E257@DIP28",
+    "W27E257-10",
+    "W27E257-12",
+    "W27E257-15",
+};
+const w27e257_dip28_programmers = [_]model.Programmer{
+    .t48,
+};
+
 pub const devices = [_]schema.DeviceRecord{
     // Selection rationale: This is the 8 KiB parallel EEPROM we use for Porsche Motronic DME development and our reference page-write and electrical-erase target.
     .{
@@ -390,5 +411,55 @@ pub const devices = [_]schema.DeviceRecord{
         .blank_value = 0xff,
         .t56_algorithm = .{ .name = "ROM28P31", .size = 62976, .sha256 = .{ 0x0b, 0x5d, 0x6e, 0xfd, 0xf4, 0xe4, 0xfe, 0xa7, 0xc8, 0xf4, 0x82, 0x24, 0x5c, 0x6c, 0xa1, 0xb9, 0x49, 0x27, 0x66, 0x75, 0x9a, 0x3b, 0xde, 0x75, 0xf2, 0x13, 0xb7, 0x0b, 0xf8, 0xc0, 0x8b, 0xaf } },
         .t76_algorithm = .{ .name = "ROM28P31", .size = 775513, .sha256 = .{ 0xbd, 0x4e, 0x60, 0xcc, 0x70, 0x37, 0x99, 0xf2, 0x9a, 0xc2, 0x8d, 0xb5, 0x3c, 0xed, 0x11, 0x2c, 0x95, 0xf0, 0xbe, 0xb9, 0x57, 0x5c, 0xec, 0xdf, 0xea, 0x08, 0x03, 0x18, 0x68, 0x6a, 0x00, 0x60 } },
+    },
+    // Selection rationale: 32 KiB electrically erasable EPROM with the 27C256 DIP-28 read pinout; exact T48 profile only, without vehicle qualification.
+    .{
+        .canonical_name = "W27C257@DIP28",
+        .aliases = &w27c257_dip28_aliases,
+        .programmers = &w27c257_dip28_programmers,
+        .chip_type = .memory,
+        .protocol_id = 0x7,
+        .variant = 0x3211,
+        .voltages_raw = 0x0,
+        .chip_info = 0,
+        .pin_map = 0xc16,
+        .data_memory_size = 0,
+        .data_memory2_size = 0,
+        .page_size = 0,
+        .pulse_delay = 100,
+        .code_memory_size = 32768,
+        .package_details_raw = 0x1c000000,
+        .read_buffer_size = 1024,
+        .write_buffer_size = 128,
+        .flags_raw = 0x78,
+        .can_erase = true,
+        .chip_id = 0xda02,
+        .chip_id_bytes_count = 2,
+        .blank_value = 0xff,
+    },
+    // Selection rationale: 32 KiB electrically erasable EPROM with the 27C256 DIP-28 read pinout; exact T48 profile only, without vehicle qualification.
+    .{
+        .canonical_name = "W27E257@DIP28",
+        .aliases = &w27e257_dip28_aliases,
+        .programmers = &w27e257_dip28_programmers,
+        .chip_type = .memory,
+        .protocol_id = 0x7,
+        .variant = 0x3211,
+        .voltages_raw = 0x80,
+        .chip_info = 0,
+        .pin_map = 0xc16,
+        .data_memory_size = 0,
+        .data_memory2_size = 0,
+        .page_size = 0,
+        .pulse_delay = 100,
+        .code_memory_size = 32768,
+        .package_details_raw = 0x1c000000,
+        .read_buffer_size = 1024,
+        .write_buffer_size = 128,
+        .flags_raw = 0x78,
+        .can_erase = true,
+        .chip_id = 0xda02,
+        .chip_id_bytes_count = 2,
+        .blank_value = 0xff,
     },
 };

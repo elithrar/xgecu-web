@@ -164,7 +164,7 @@ pnpm run generate:catalog
 pnpm run check:catalog
 ```
 
-The focused catalog covers `AT28C64B`, `AT28C256`, manufacturer-specific `27C64`, `27C128`, `27C256`, and `27C512` profiles. Generic aliases such as `27C64` and `27C512` are intentionally rejected because voltage, ID, timing, and algorithm attributes differ across manufacturers and variants.
+The focused catalog covers the T48-only `W27C257@DIP28` and `W27E257@DIP28` electrically erasable 32 KiB EPROMs ([sources and qualification limits](docs/winbond-27x257.md)), `AT28C64B`, `AT28C256`, manufacturer-specific `27C64`, `27C128`, `27C256`, and `27C512` profiles. Generic aliases such as `27C64` and `27C512` are intentionally rejected because voltage, ID, timing, and algorithm attributes differ across manufacturers and variants.
 
 ## Hardware safety
 
