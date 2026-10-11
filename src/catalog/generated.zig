@@ -132,17 +132,6 @@ const w27c257_dip28_programmers = [_]model.Programmer{
     .t48,
 };
 
-const w27e257_dip28_aliases = [_][]const u8{
-    "W27E257",
-    "W27E257@DIP28",
-    "W27E257-10",
-    "W27E257-12",
-    "W27E257-15",
-};
-const w27e257_dip28_programmers = [_]model.Programmer{
-    .t48,
-};
-
 pub const devices = [_]schema.DeviceRecord{
     // Selection rationale: This is the 8 KiB parallel EEPROM we use for Porsche Motronic DME development and our reference page-write and electrical-erase target.
     .{
@@ -433,31 +422,7 @@ pub const devices = [_]schema.DeviceRecord{
         .write_buffer_size = 128,
         .flags_raw = 0x78,
         .can_erase = true,
-        .chip_id = 0xda02,
-        .chip_id_bytes_count = 2,
-        .blank_value = 0xff,
-    },
-    // Selection rationale: 32 KiB electrically erasable EPROM with the 27C256 DIP-28 read pinout; exact T48 profile only, without vehicle qualification.
-    .{
-        .canonical_name = "W27E257@DIP28",
-        .aliases = &w27e257_dip28_aliases,
-        .programmers = &w27e257_dip28_programmers,
-        .chip_type = .memory,
-        .protocol_id = 0x7,
-        .variant = 0x3211,
-        .voltages_raw = 0x80,
-        .chip_info = 0,
-        .pin_map = 0xc16,
-        .data_memory_size = 0,
-        .data_memory2_size = 0,
-        .page_size = 0,
-        .pulse_delay = 100,
-        .code_memory_size = 32768,
-        .package_details_raw = 0x1c000000,
-        .read_buffer_size = 1024,
-        .write_buffer_size = 128,
-        .flags_raw = 0x78,
-        .can_erase = true,
+        .requires_blank_before_write = true,
         .chip_id = 0xda02,
         .chip_id_bytes_count = 2,
         .blank_value = 0xff,

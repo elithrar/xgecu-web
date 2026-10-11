@@ -351,7 +351,7 @@ export class WasmBridge {
           // Preserve the lifecycle failure even if a caller's notification hook fails.
         }
         throw new XgecuWebUSBError(
-          "The programmer operation failed and its hardware cleanup could not be completed. Reconnect the programmer before continuing.",
+          "The programmer operation failed and its hardware cleanup could not be completed. Disconnect USB power, then reload this page before reconnecting.",
           "WebUSBLifecycleFailed",
           error
         );

@@ -164,7 +164,9 @@ pnpm run generate:catalog
 pnpm run check:catalog
 ```
 
-The focused catalog covers the T48-only `W27C257@DIP28` and `W27E257@DIP28` electrically erasable 32 KiB EPROMs ([sources and qualification limits](docs/winbond-27x257.md)), `AT28C64B`, `AT28C256`, manufacturer-specific `27C64`, `27C128`, `27C256`, and `27C512` profiles. Generic aliases such as `27C64` and `27C512` are intentionally rejected because voltage, ID, timing, and algorithm attributes differ across manufacturers and variants.
+The focused catalog covers the T48-only `W27C257@DIP28` electrically erasable 32 KiB EPROM ([sources and qualification limits](docs/winbond-27x257.md)), `AT28C64B`, `AT28C256`, manufacturer-specific `27C64`, `27C128`, `27C256`, and `27C512` profiles. W27E257 is withheld because its programming-voltage evidence is unresolved; never substitute the W27C257 profile. Generic aliases such as `27C64` and `27C512` are intentionally rejected because voltage, ID, timing, and algorithm attributes differ across manufacturers and variants.
+
+The [32 KiB safety review](docs/t48-32k-safety-review.md) records ranked findings, independent review passes, regression evidence and remaining physical qualification gates.
 
 The existing `M27C256B@DIP28` profile covers ST's windowed `M27C256B-10F1`
 and `M27C256B-12F1` speed grades. Both require external UV erase; see the

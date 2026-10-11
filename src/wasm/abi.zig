@@ -1105,7 +1105,7 @@ fn afterChipIdState(op: *Operation) State {
             .send_t76_protect_off
         else if (op.erase)
             .send_erase
-        else if (!op.device.can_erase)
+        else if (op.device.requiresBlankBeforeWrite())
             .blank_send_read_cmd
         else if (op.unprotect_before and op.programmer != .t76)
             .send_protect_off

@@ -12,8 +12,8 @@ async function bridge() {
   return new WasmBridge(instance.exports as unknown as WasmExports);
 }
 
-function t48(options: { chipId?: number; initialByte?: number; badId?: boolean; failedErase?: boolean; corruptReadback?: boolean } = {}) {
-  const memory = new Uint8Array(32768).fill(options.initialByte ?? 0x00);
+function t48(options: { chipId?: number; initialByte?: number; badId?: boolean; failedErase?: boolean; corruptReadback?: boolean; size?: number; readBufferSize?: number; byteRewrite?: boolean } = {}) {
+  const memory = new Uint8Array(options.size ?? 32768).fill(options.initialByte ?? 0x00);
   const commands: number[] = [];
   const reads: number[] = [];
   const writes: number[] = [];
@@ -32,14 +32,16 @@ function t48(options: { chipId?: number; initialByte?: number; badId?: boolean; 
       } else {
         expect(transfer.endpoint).toBe(2);
         expect(command[0]).toBe(0x0c);
-        // A full blank check must finish before the first programming payload.
-        expect(blankBytesRead).toBe(32768);
+        // EPROM programming only clears bits; EEPROM has a byte-erase cycle.
+        if (!options.byteRewrite) expect(blankBytesRead).toBe(memory.length);
         const view = new DataView(command.buffer);
         const address = view.getUint32(4, true);
         const length = view.getUint16(2, true);
         expect(length).toBe(128);
         expect(address + length).toBeLessThanOrEqual(memory.length);
-        memory.set(transfer.data.subarray(0, length), address);
+        for (let i = 0; i < length; i += 1) {
+          memory[address + i] = options.byteRewrite ? transfer.data[i]! : memory[address + i]! & transfer.data[i]!;
+        }
         writes.push(address);
         wrote = true;
       }
@@ -50,7 +52,7 @@ function t48(options: { chipId?: number; initialByte?: number; badId?: boolean; 
       const view = new DataView(command.buffer);
       const address = view.getUint32(4, true);
       const length = view.getUint16(2, true);
-      expect(length).toBe(1024);
+      expect(length).toBeLessThanOrEqual(options.readBufferSize ?? 1024);
       expect(address + length).toBeLessThanOrEqual(memory.length);
       reads.push(address);
       if (!wrote) blankBytesRead += length;
@@ -77,7 +79,8 @@ const writeOptions = {
   unprotectBefore: false, protectAfter: false,
 };
 
-describe.each(["W27C257", "W27E257"])("%s shipped T48 profile", (device) => {
+describe("W27C257 shipped T48 profile", () => {
+  const device = "W27C257";
   it("reads and rewrites all 32768 bytes with erase, blank check and verification", async () => {
     const api = await bridge();
     const fake = t48();
@@ -107,6 +110,35 @@ describe.each(["W27C257", "W27E257"])("%s shipped T48 profile", (device) => {
       .toThrow("InputTooLarge");
   });
 
+  it.each([128, 32768])("blank-checks the full chip before an explicit no-erase %i-byte write", async (length) => {
+    const api = await bridge();
+    const fake = t48({ initialByte: 0xff });
+    const image = new Uint8Array(length).fill(0x5a);
+    await api.runOperation(api.startWriteROM({ ...writeOptions, device, erase: false, data: image }), fake.transfer);
+    expect(fake.memory.subarray(0, length)).toEqual(image);
+    expect(fake.memory.subarray(length).every((byte) => byte === 0xff)).toBe(true);
+    expect(fake.commands).not.toContain(0x0e);
+    expect(fake.writes).toEqual(Array.from({ length: length / 128 }, (_, i) => i * 128));
+    expect(fake.reads).toEqual([
+      ...Array.from({ length: 32 }, (_, i) => i * 1024),
+      ...Array.from({ length: Math.ceil(length / 1024) }, (_, i) => i * 1024),
+    ]);
+    expect(fake.commands.at(-1)).toBe(0x04);
+  });
+
+  it.each([128, 32768])("refuses a no-erase %i-byte write when the final chip byte is nonblank", async (length) => {
+    const api = await bridge();
+    const fake = t48({ initialByte: 0xff });
+    fake.memory[32767] = 0;
+    await expect(api.runOperation(api.startWriteROM({
+      ...writeOptions, device, erase: false, data: new Uint8Array(length),
+    }), fake.transfer)).rejects.toMatchObject({ code: "TargetNotBlank" });
+    expect(fake.writes).toHaveLength(0);
+    expect(fake.commands).not.toContain(0x0e);
+    expect(fake.memory[0]).toBe(0xff);
+    expect(fake.commands.at(-1)).toBe(0x04);
+  });
+
   it.each([
     [{ badId: true }, "ChipIdMismatch"],
     [{ failedErase: true }, "TargetNotBlank"],
@@ -131,6 +163,31 @@ describe.each(["W27C257", "W27E257"])("%s shipped T48 profile", (device) => {
         .toThrow("ProtectionUnsupported");
     }
   });
+});
+
+it.each(["W27E257", "W27E257@DIP28", "W27E257-10", "W27E257-12", "W27E257-15"])(
+  "rejects withheld %s before creating an operation", async (device) => {
+    const api = await bridge();
+    expect(api.resolveDevice(device, "t48")).toBeNull();
+    expect(() => api.startReadROM({ ...writeOptions, device })).toThrow("device not found or unsupported");
+    expect(() => api.startWriteROM({ ...writeOptions, device, data: new Uint8Array(32768) }))
+      .toThrow("device not found or unsupported");
+  },
+);
+
+it("preserves AT28C64B EEPROM rewriting without a full-chip erase or blank requirement", async () => {
+  const api = await bridge();
+  const fake = t48({ size: 8192, readBufferSize: 512, initialByte: 0, byteRewrite: true });
+  const image = new Uint8Array(128).fill(0x5a);
+  await api.runOperation(api.startWriteROM({
+    ...writeOptions, device: "AT28C64B", erase: false, data: image,
+  }), fake.transfer);
+  expect(fake.memory.subarray(0, 128)).toEqual(image);
+  expect(fake.memory.subarray(128).every((byte) => byte === 0)).toBe(true);
+  expect(fake.commands).not.toContain(0x0e);
+  expect(fake.writes).toEqual([0]);
+  expect(fake.reads).toEqual([0]); // Requested verification only; no pre-write blank check.
+  expect(fake.commands.at(-1)).toBe(0x04);
 });
 
 // ST's -10F1 and -12F1 grades use this same existing canonical profile;

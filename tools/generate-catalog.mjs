@@ -89,6 +89,7 @@ function generate(catalog) {
     field(out, "write_buffer_size", zigNumber(device.writeBufferSize));
     field(out, "flags_raw", zigNumber(device.flagsRaw));
     field(out, "can_erase", String(device.canErase));
+    if (device.requiresBlankBeforeWrite != null) field(out, "requires_blank_before_write", String(device.requiresBlankBeforeWrite));
     if (device.canAdjustClock != null) field(out, "can_adjust_clock", String(Boolean(device.canAdjustClock)));
     if (device.chipId != null) field(out, "chip_id", zigNumber(device.chipId));
     if (device.chipIdBytesCount != null) field(out, "chip_id_bytes_count", zigNumber(device.chipIdBytesCount));
@@ -113,6 +114,9 @@ function validateDevice(device, index) {
   requiredArray(device, "programmers", label);
   requiredString(device, "chipType", label);
   if (typeof device.canErase !== "boolean") throw new Error(`${label}.canErase must be a boolean`);
+  if (device.requiresBlankBeforeWrite != null && typeof device.requiresBlankBeforeWrite !== "boolean") {
+    throw new Error(`${label}.requiresBlankBeforeWrite must be a boolean`);
+  }
   for (const [aliasIndex, alias] of device.aliases.entries()) {
     if (typeof alias !== "string" || alias.length === 0) throw new Error(`${label}.aliases[${aliasIndex}] must be a non-empty string`);
   }

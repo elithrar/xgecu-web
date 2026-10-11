@@ -307,7 +307,7 @@ var m = new TextEncoder(), h = new TextDecoder(), se = 1, ce = 5, le = 80, ue = 
 				try {
 					r.onCleanupFailure?.();
 				} catch {}
-				throw new e("The programmer operation failed and its hardware cleanup could not be completed. Reconnect the programmer before continuing.", "WebUSBLifecycleFailed", i);
+				throw new e("The programmer operation failed and its hardware cleanup could not be completed. Disconnect USB power, then reload this page before reconnecting.", "WebUSBLifecycleFailed", i);
 			}
 			throw i;
 		} finally {
@@ -821,8 +821,8 @@ var We = (e) => e.status === "ok" ? {
 				try {
 					this.device.opened && this.state.claimed && await this.device.releaseInterface?.(N);
 				} catch {}
-				if (this.state.claimed = !1, this.device.opened && (this.state.openedByLibrary || this.state.poisoned) && await this.device.close(), this.state.poisoned && this.device.opened) throw new e("Failed to reset the programmer after transaction cleanup failed.", "WebUSBLifecycleFailed");
-				this.state.openedByLibrary = !1, this.state.references = 0, this.state.poisoned = !1, this.state.sessionEstablished = !1, this.state.detectedProgrammer = void 0, this.closed = !0;
+				if (this.state.claimed = !1, this.device.opened && (this.state.openedByLibrary || this.state.poisoned) && await this.device.close(), this.state.poisoned && this.device.opened) throw new e("Failed to close the USB session after hardware cleanup failed. Disconnect USB power, then reload this page before reconnecting.", "WebUSBLifecycleFailed");
+				this.state.openedByLibrary = !1, this.state.references = 0, this.state.sessionEstablished = !1, this.state.detectedProgrammer = void 0, this.closed = !0;
 			} finally {
 				this.state.lifecycleActive = !1;
 			}
@@ -1010,15 +1010,11 @@ async function B(t, n = !1) {
 	let r = H(t);
 	if (r.lifecycleActive || !n && r.operations !== 0) throw new e("A USB lifecycle operation is already in progress for this programmer.", "OperationInProgress");
 	if (n && !t.opened && r.sessionEstablished) throw new e("The programmer connection was lost. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
-	if (n && r.poisoned) throw new e("The programmer is in an unknown hardware state. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
+	if (r.poisoned) throw new e("Hardware cleanup failed. Disconnect USB power, then reload this page before reconnecting.", "WebUSBLifecycleFailed");
 	r.lifecycleActive = !0;
 	let i = !1;
 	try {
-		if (!n && r.poisoned) {
-			if (t.opened && r.claimed && await t.releaseInterface?.(N).catch(() => void 0), r.claimed = !1, t.opened && await $("reset the programmer after transaction cleanup failed", () => t.close()), t.opened) throw new e("The programmer remained open after reset. Disconnect and reconnect it before continuing.", "WebUSBLifecycleFailed");
-			r.openedByLibrary = !1, r.sessionEstablished = !1, r.detectedProgrammer = void 0;
-		}
-		t.opened || (r.claimed = !1, r.detectedProgrammer = void 0, await $("open USB device", () => t.open()), r.openedByLibrary = !0, i = !0), t.configuration?.configurationValue !== P && (await $("select USB configuration 1", () => t.selectConfiguration(P)), r.claimed = !1), r.claimed ||= (await $("claim USB interface 0", () => t.claimInterface(N)), !0), await qe(t), r.poisoned = !1, r.sessionEstablished = !0;
+		t.opened || (r.claimed = !1, r.detectedProgrammer = void 0, await $("open USB device", () => t.open()), r.openedByLibrary = !0, i = !0), t.configuration?.configurationValue !== P && (await $("select USB configuration 1", () => t.selectConfiguration(P)), r.claimed = !1), r.claimed ||= (await $("claim USB interface 0", () => t.claimInterface(N)), !0), await qe(t), r.sessionEstablished = !0;
 	} catch (e) {
 		throw r.claimed && await t.releaseInterface?.(N).catch(() => void 0), r.claimed = !1, i && t.opened && await t.close().catch(() => void 0), i && (r.openedByLibrary = !1, r.sessionEstablished = !1), e;
 	} finally {

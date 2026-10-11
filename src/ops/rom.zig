@@ -182,7 +182,7 @@ pub fn writeROM(
     const descriptor = device.descriptor(info.programmer);
     // Reserve blank-check storage before erase so allocation failure cannot strand an erased target.
     var blank_buffer: ?[]u8 = null;
-    if (options.erase or !device.can_erase) {
+    if (options.erase or device.requiresBlankBeforeWrite()) {
         blank_buffer = try allocator.alloc(u8, readChunkSize(info.programmer, descriptor));
     }
     defer if (blank_buffer) |buffer| allocator.free(buffer);
@@ -231,7 +231,7 @@ pub fn writeROM(
         protocol_open = true;
     }
 
-    if (options.erase or !device.can_erase) {
+    if (options.erase or device.requiresBlankBeforeWrite()) {
         try ensureBlank(info.programmer, trans, device, descriptor, options.memory, size, blank_buffer.?);
         try protocol.end(info.programmer, trans);
         protocol_open = false;
@@ -647,6 +647,32 @@ test "writeROM blank-checks an electrically erased target before programming" {
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.erase) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.read_code) != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, fake.sent.items, protocol_bytes.command.write_code) == null);
+}
+
+test "writeROM blank-checks Winbond EPROMs even for a no-erase prefix write" {
+    for ([_]bool{ false, true }) |blank| {
+        var response = [_]u8{0} ** 80;
+        response[4] = 1;
+        response[6] = 7;
+        const target = [_]u8{if (blank) 0xff else 0x00} ** 1024;
+        const data = [_]u8{0xff} ** 128;
+        var fake = transport_mod.FakeTransport.init(std.testing.allocator, &response);
+        fake.payload_response = &target;
+        defer fake.deinit();
+        const result = writeROM(std.testing.allocator, fake.transport(), "W27C257", &data, .{
+            .programmer = .t48,
+            .erase = false,
+            .skip_id_check = true,
+        });
+        if (blank) {
+            try result;
+            try std.testing.expectEqual(@as(usize, 33), fake.read_payload_calls);
+            try std.testing.expectEqual(@as(usize, 1), fake.write_payload_calls);
+        } else {
+            try std.testing.expectError(Error.TargetNotBlank, result);
+            try std.testing.expectEqual(@as(usize, 0), fake.write_payload_calls);
+        }
+    }
 }
 
 test "writeROM allocates blank-check storage before electrical erase" {

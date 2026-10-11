@@ -99,11 +99,12 @@ export class WebUSBProgrammerConnection implements ProgrammerConnection {
       this.state.claimed = false;
       if (this.device.opened && (this.state.openedByLibrary || this.state.poisoned)) await this.device.close();
       if (this.state.poisoned && this.device.opened) {
-        throw new XgecuWebUSBError("Failed to reset the programmer after transaction cleanup failed.", "WebUSBLifecycleFailed");
+        throw new XgecuWebUSBError("Failed to close the USB session after hardware cleanup failed. Disconnect USB power, then reload this page before reconnecting.", "WebUSBLifecycleFailed");
       }
       this.state.openedByLibrary = false;
       this.state.references = 0;
-      this.state.poisoned = false;
+      // USB close only releases the host session; it cannot establish that the
+      // chip was powered down. Preserve quarantine for this device in this page.
       this.state.sessionEstablished = false;
       this.state.detectedProgrammer = undefined;
       this.closed = true;
@@ -366,23 +367,12 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
   if (forOperation && !device.opened && state.sessionEstablished) {
     throw new XgecuWebUSBError("The programmer connection was lost. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
   }
-  if (forOperation && state.poisoned) {
-    throw new XgecuWebUSBError("The programmer is in an unknown hardware state. Reconnect before starting another operation.", "WebUSBLifecycleFailed");
+  if (state.poisoned) {
+    throw new XgecuWebUSBError("Hardware cleanup failed. Disconnect USB power, then reload this page before reconnecting.", "WebUSBLifecycleFailed");
   }
   state.lifecycleActive = true;
   let openedHere = false;
   try {
-    if (!forOperation && state.poisoned) {
-      if (device.opened && state.claimed) await device.releaseInterface?.(INTERFACE_NUMBER).catch(() => undefined);
-      state.claimed = false;
-      if (device.opened) await lifecycle("reset the programmer after transaction cleanup failed", () => device.close());
-      if (device.opened) {
-        throw new XgecuWebUSBError("The programmer remained open after reset. Disconnect and reconnect it before continuing.", "WebUSBLifecycleFailed");
-      }
-      state.openedByLibrary = false;
-      state.sessionEstablished = false;
-      state.detectedProgrammer = undefined;
-    }
     if (!device.opened) {
       state.claimed = false;
       state.detectedProgrammer = undefined;
@@ -399,7 +389,6 @@ async function openAndClaim(device: USBDeviceLike, forOperation = false): Promis
       state.claimed = true;
     }
     await ensureEndpointAlternate(device);
-    state.poisoned = false;
     state.sessionEstablished = true;
   } catch (error) {
     if (state.claimed) await device.releaseInterface?.(INTERFACE_NUMBER).catch(() => undefined);

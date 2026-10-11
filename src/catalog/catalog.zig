@@ -177,10 +177,11 @@ test "empty T48 search exposes every sourced ROM profile" {
     for (found) |device| try std.testing.expect(device.supports_t48);
 }
 
-test "Winbond 32 KiB DIP profiles preserve distinct sourced T48 descriptors" {
+test "Winbond 32 KiB DIP profile preserves its sourced T48 descriptor" {
     const t48 = @import("../programmer/t48.zig");
     const bytes = @import("../programmer/protocol_bytes.zig");
-    for ([_][]const u8{ "W27C257-12", "W27E257-12" }, [_]u8{ 0x00, 0x80 }) |name, voltage| {
+    for ([_][]const u8{ "W27C257-10", "W27C257-12" }) |name| {
+        const voltage: u8 = 0x00;
         const device = try find(name, .t48);
         try std.testing.expectEqual(@as(u32, 32768), device.code_memory_size);
         try std.testing.expectEqual(@as(u32, 0xda02), device.chip_id);
@@ -190,6 +191,7 @@ test "Winbond 32 KiB DIP profiles preserve distinct sourced T48 descriptors" {
         try std.testing.expectEqual(@as(u32, 0x0c16), device.pin_map);
         try std.testing.expectEqual(@as(u8, 0xff), device.blank_value);
         try std.testing.expect(device.can_erase);
+        try std.testing.expect(device.requiresBlankBeforeWrite());
         try std.testing.expect(device.pin_check == null);
         try std.testing.expect(!device.supports(.t56));
         try std.testing.expect(!device.supports(.t76));
@@ -210,7 +212,13 @@ test "Winbond 32 KiB DIP profiles preserve distinct sourced T48 descriptors" {
         t48.writeBeginPacket(&actual, .t48, device.descriptor(.t48));
         try std.testing.expectEqualSlices(u8, &expected, &actual);
     }
-    for ([_][]const u8{ "W27C257P-12", "W27E257P-12", "W27E257@PLCC32", "W27E512", "27C256" }) |name| {
+    for ([_][]const u8{ "W27C257P-12", "W27E257", "W27E257@DIP28", "W27E257-10", "W27E257-12", "W27E257-15", "W27E257P-12", "W27E257@PLCC32", "W27E512", "27C256" }) |name| {
         try std.testing.expectError(Error.DeviceNotFound, find(name, .t48));
     }
+}
+
+test "blank-write policy distinguishes UV EPROMs from rewriteable EEPROMs" {
+    try std.testing.expect((try find("M27C64A", .t48)).requiresBlankBeforeWrite());
+    try std.testing.expect((try find("M27C256B", .t48)).requiresBlankBeforeWrite());
+    try std.testing.expect(!(try find("AT28C64B", .t48)).requiresBlankBeforeWrite());
 }

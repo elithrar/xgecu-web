@@ -680,8 +680,15 @@ describe("BrowserXgecuWebUSB", () => {
     expect(device.opened).toBe(false);
     await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
 
-    await api.connectProgrammer(device);
-    expect(device.opened).toBe(true);
+    // Closing a WebUSB session does not remove power from the chip. Neither a
+    // chooser reconnect nor a new wrapper may forget failed hardware cleanup.
+    await programmer.close();
+    await expect(api.connectProgrammer(device)).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+    await expect(api.requestProgrammer()).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
+    const anotherApi = new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device));
+    await expect(anotherApi.connectProgrammer(device)).rejects.toThrow("Disconnect USB power");
+    expect(device.opened).toBe(false);
+    expect(device.claimInterface).toHaveBeenCalledOnce();
   });
 
   it("preserves quarantine when a poisoned programmer cannot be reset", async () => {
