@@ -596,10 +596,10 @@ async function withProgrammerOperation<T>(device: USBDeviceLike, task: () => Pro
   }
   state.operations += 1;
   try {
-    return unwrapInternal(Result.ok(await task()));
+    return await task();
   } catch (error) {
     if (state.poisoned) await quarantineProgrammer(device, state);
-    throw unwrapInternal(Result.err(xgecuErrorFromUnknown(error)));
+    throw xgecuErrorFromUnknown(error);
   } finally {
     state.operations -= 1;
   }
@@ -677,23 +677,17 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 async function resultFromPromise<T>(task: () => Promise<T>): Promise<BetterResult<T, XgecuWebUSBError>> {
-  try {
-    return Result.ok(await task());
-  } catch (error) {
-    return Result.err(xgecuErrorFromUnknown(error));
-  }
+  // Permission, lifecycle, and hardware work must execute only once per call.
+  return Result.tryPromise({ try: task, catch: xgecuErrorFromUnknown });
 }
 
-function resultFromThrowable<T>(task: () => T): BetterResult<T, XgecuWebUSBError> {
-  try {
-    return Result.ok(task());
-  } catch (error) {
-    return Result.err(xgecuErrorFromUnknown(error));
-  }
+function resultFromThrowable<T>(task: () => Awaited<T>): BetterResult<T, XgecuWebUSBError> {
+  return Result.try({ try: task, catch: xgecuErrorFromUnknown });
 }
 
 function unwrapInternal<T>(result: BetterResult<T, XgecuWebUSBError>): T {
-  if (result.status === "error") throw result.error;
+  // unwrap() and throwing match callbacks wrap domain errors in Panic.
+  if (result.isErr()) throw result.error;
   return result.value;
 }
 
