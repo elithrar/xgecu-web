@@ -8,6 +8,13 @@ import { createProgrammer, XgecuWebUSBError, type ProgrammerConnection } from "x
 
 High-level API methods return plain values and throw package-owned `XgecuWebUSBError` objects for expected WebUSB, catalog, and programmer errors. The error object includes a stable `code` for UI branching.
 
+Internal Result handling preserves existing package error objects and wraps other
+exceptions with their original `cause`. It does not expose Result or Panic as the
+public error contract. Calls are single-attempt: permission requests, USB transfers,
+erase/write operations, and cancellation cleanup are never automatically replayed.
+After a failed close, retain the connection and explicitly retry cleanup before
+reconnecting; a successful USB close does not clear hardware-cleanup quarantine.
+
 ## Core types
 
 ```ts

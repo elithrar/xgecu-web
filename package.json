@@ -39,7 +39,7 @@
     "attributions.md"
   ],
   "dependencies": {
-    "better-result": "^2.9.2"
+    "better-result": "^3.0.1"
   },
   "devDependencies": {
     "@types/node": "latest",

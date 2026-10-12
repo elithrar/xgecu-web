@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { WebUSBTransferError } from "../src/errors";
+import { WebUSBTransferError, XgecuWebUSBError } from "../src/errors";
 import { BrowserXgecuWebUSB, createProgrammer, performWebUSBTransfer } from "../src/webusb";
 import type { USBConfigurationLike, USBDeviceLike, USBNavigatorLike } from "../src/types";
 import type { UsbTransferHandler, WasmBridge } from "../src/wasm";
@@ -115,6 +115,62 @@ describe("performWebUSBTransfer", () => {
 });
 
 describe("BrowserXgecuWebUSB", () => {
+  it.each(["deviceList", "resolveDevice"] as const)("preserves domain error identity from %s", (method) => {
+    const wasm = fakeWasm();
+    const failure = new XgecuWebUSBError("catalog failed", "InvalidInput", new Error("decode failed"));
+    const call = vi.spyOn(wasm, method).mockImplementation(() => { throw failure; });
+    const api = new BrowserXgecuWebUSB(wasm);
+    let received: unknown;
+    try {
+      if (method === "deviceList") api.deviceList();
+      else api.resolveDevice("AT28C64B");
+    } catch (error) {
+      received = error;
+    }
+    expect(received).toBe(failure);
+    expect(call).toHaveBeenCalledOnce();
+  });
+
+  it.each(["throw", "reject"] as const)("maps a device-list %s once and permits an explicit read-only retry", async (mode) => {
+    const device = new FakeDevice();
+    const usb = fakeUsb(device);
+    const cause = new DOMException("USB service unavailable", "NetworkError");
+    const getDevices = vi.spyOn(usb, "getDevices");
+    if (mode === "throw") getDevices.mockImplementationOnce(() => { throw cause; });
+    else getDevices.mockRejectedValueOnce(cause);
+    const api = new BrowserXgecuWebUSB(fakeWasm(), usb);
+
+    await expect(api.getProgrammers()).rejects.toMatchObject({
+      name: "XgecuWebUSBError", code: "Unknown", cause
+    });
+    expect(getDevices).toHaveBeenCalledOnce();
+    expect(await api.getProgrammers()).toHaveLength(1);
+    expect(getDevices).toHaveBeenCalledTimes(2);
+    expect(device.opened).toBe(false);
+    expect(device.out).toHaveLength(0);
+  });
+
+  it("preserves permission cancellation without reopening the chooser", async () => {
+    const device = new FakeDevice();
+    const usb = fakeUsb(device);
+    const cause = new DOMException("No device selected", "NotFoundError");
+    const requestDevice = vi.spyOn(usb, "requestDevice").mockRejectedValue(cause);
+    const open = vi.spyOn(device, "open");
+    const api = new BrowserXgecuWebUSB(fakeWasm(), usb);
+    await expect(api.requestProgrammer()).rejects.toMatchObject({ code: "Unknown", cause });
+    expect(requestDevice).toHaveBeenCalledOnce();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("preserves domain error identity through asynchronous capture", async () => {
+    const usb = fakeUsb(new FakeDevice());
+    const failure = new XgecuWebUSBError("USB unavailable", "WebUSBUnavailable");
+    const getDevices = vi.spyOn(usb, "getDevices").mockRejectedValue(failure);
+    const api = new BrowserXgecuWebUSB(fakeWasm(), usb);
+    await expect(api.getProgrammers()).rejects.toBe(failure);
+    expect(getDevices).toHaveBeenCalledOnce();
+  });
+
   it("initializes the shipped catalog without WebUSB", async () => {
     vi.stubGlobal("navigator", {});
     vi.stubGlobal("fetch", async () => new Response(readFileSync(new URL("../../dist/xgecu_web.wasm", import.meta.url))));
@@ -823,14 +879,15 @@ describe("BrowserXgecuWebUSB", () => {
   it("closes and quarantines a programmer when transaction cleanup fails", async () => {
     const device = new FakeDevice();
     const wasm = fakeWasm();
+    const failure = new WebUSBTransferError("cleanup failed");
     vi.spyOn(wasm, "runOperation").mockImplementation(async (_handle, _performTransfer, options) => {
       options?.onCleanupFailure?.();
-      throw new WebUSBTransferError("cleanup failed");
+      throw failure;
     });
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
     const programmer = await api.requestProgrammer();
 
-    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toThrow("cleanup failed");
+    await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toBe(failure);
     expect(device.opened).toBe(false);
     await expect(api.readROM({ programmer, device: "AT28C64B" })).rejects.toMatchObject({ code: "WebUSBLifecycleFailed" });
 
