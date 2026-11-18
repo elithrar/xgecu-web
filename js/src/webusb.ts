@@ -233,21 +233,22 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
 
   async checkPinContacts(options: PinCheckOptions): Promise<PinCheckResult> {
     validateConnection(options.programmer);
-    validateDeviceName(options.device);
+    const { device: deviceName, signal } = options;
+    validateDeviceName(deviceName);
     validateEnum(options.programmerKind, ["auto", "t48"], "programmerKind");
-    throwIfAborted(options.signal);
+    throwIfAborted(signal);
     const programmerKind = options.programmerKind ?? "auto";
     const usbDevice = options.programmer.device;
     return withProgrammerOperation(usbDevice, async () => {
-      const device = this.wasm.resolveDevice(options.device, programmerKind);
+      const device = this.wasm.resolveDevice(deviceName, programmerKind);
       if (!device) throw new XgecuWebUSBError("Device not found or unsupported by requested programmer.", "DeviceNotFound");
       if (!device.supportsPinCheck) {
         throw new XgecuWebUSBError("Pin-contact checking is unavailable for this device and programmer.", "PinCheckUnavailable");
       }
       await ensureReady(usbDevice);
-      const handle = this.wasm.startPinCheck({ programmer: programmerKind, device: options.device });
+      const handle = this.wasm.startPinCheck({ programmer: programmerKind, device: deviceName });
       const bytes = await this.wasm.runOperation(handle, (transfer) => performWebUSBTransfer(usbDevice, transfer), {
-        signal: options.signal,
+        signal,
         onCleanupFailure: () => markProgrammerPoisoned(usbDevice)
       });
       return parsePinCheckResult(bytes);
@@ -262,7 +263,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       programmer: options.programmer,
       programmerKind: options.programmerKind ?? "auto",
       device: options.device,
-      data: options.data.slice(),
+      data: new Uint8Array(options.data),
       memory: options.memory ?? "code",
       erase: options.erase ?? true,
       eraseNumFuses: options.eraseNumFuses ?? 0,
@@ -310,7 +311,7 @@ export class BrowserXgecuWebUSB implements XgecuWebUSB {
       );
       const algorithms = await loadAlgorithms(this.algorithmProvider, device, algorithmProgrammer);
       const handle = this.wasm.startWriteROM({
-        programmer: operation.programmerKind,
+        programmer: writeProgrammerForEndpoints(usbDevice, operation.programmerKind),
         device: operation.device,
         memory: operation.memory,
         data: operation.data,
@@ -456,6 +457,26 @@ function hasCommandEndpoints(alternate: Parameters<typeof hasProgrammerEndpoints
   return ["in", "out"].every((direction) => alternate.endpoints.some((endpoint) =>
     endpoint.endpointNumber === 1 && endpoint.direction === direction && endpoint.type === "bulk"
   ));
+}
+
+function writeProgrammerForEndpoints(device: USBDeviceLike, requested: ProgrammerKind): ProgrammerKind {
+  // Minimal transport adapters may omit descriptors. Browser WebUSB supplies
+  // them, so recheck the active alternate after all asynchronous setup.
+  const configuration = device.configuration;
+  if (!device.opened || configuration?.configurationValue !== DEFAULT_CONFIGURATION) {
+    throw new XgecuWebUSBError("The programmer USB configuration changed before writing.", "WebUSBLifecycleFailed");
+  }
+  const isT76 = device.productId === T76_PRODUCT_ID;
+  if (requested !== "auto" && (requested === "t76") !== isT76) {
+    throw new XgecuWebUSBError("USB identity and requested programmer model disagree.", "ProgrammerMismatch");
+  }
+  if (!configuration.interfaces) return requested;
+  const alternate = configuration.interfaces.find((entry) => entry.interfaceNumber === INTERFACE_NUMBER)?.alternate;
+  if (alternate && hasProgrammerEndpoints(alternate, device.productId)) return isT76 ? "t76" : requested;
+  // On the shared ID only T56 can write over a command-only alternate.
+  // Pin auto to T56 here: Wasm checks system info before its first BEGIN.
+  if (!isT76 && requested !== "t48" && alternate && hasCommandEndpoints(alternate)) return "t56";
+  throw new XgecuWebUSBError("The active USB alternate lacks the bulk endpoints required for writing.", "WebUSBLifecycleFailed");
 }
 
 function hasProgrammerEndpoints(

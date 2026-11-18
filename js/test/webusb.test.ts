@@ -364,12 +364,18 @@ describe("BrowserXgecuWebUSB", () => {
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
     const programmer = await api.requestProgrammer();
 
-    await expect(api.checkPinContacts({ programmer, device: "AT28C64B" })).resolves.toEqual({
+    const options = { programmer, device: "AT28C64B", signal: new AbortController().signal };
+    const signal = options.signal;
+    const pending = api.checkPinContacts(options);
+    options.device = "M27C64A";
+    options.signal = AbortSignal.abort();
+    await expect(pending).resolves.toEqual({
       passed: false,
       checkedPins: [2, 3, 28],
       badPins: [2]
     });
     expect(startPinCheck).toHaveBeenCalledWith({ programmer: "auto", device: "AT28C64B" });
+    expect(wasm.runOperation).toHaveBeenCalledWith(3, expect.any(Function), expect.objectContaining({ signal }));
   });
 
   it("configures and claims already-open devices before reads", async () => {
@@ -435,9 +441,50 @@ describe("BrowserXgecuWebUSB", () => {
       interfaces: [{ interfaceNumber: 0, alternate: empty, alternates: [empty, t56] }]
     };
 
-    await new BrowserXgecuWebUSB(fakeWasm(), fakeUsb(device)).connectProgrammer(device);
-
+    const wasm = fakeWasm();
+    vi.spyOn(wasm, "identifyProgrammer").mockResolvedValue("t56");
+    const requirement = { programmer: "t56", name: "ROM28P41", size: 3, sha256: "11".repeat(32) } as const;
+    vi.spyOn(wasm, "resolveDevice").mockReturnValue({ ...fakeDeviceSummary(), supportsT56: true, algorithms: [requirement] });
+    const startWrite = vi.spyOn(wasm, "startWriteROM");
+    const provider = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device), provider);
+    const programmer = await api.connectProgrammer(device);
     expect(device.selectAlternateInterface).toHaveBeenCalledWith(0, 3);
+    await api.writeROM({ programmer, device: "AT28C64B", data: new Uint8Array(8192) });
+    expect(provider).toHaveBeenCalledWith(requirement);
+    expect(startWrite).toHaveBeenCalledWith(expect.objectContaining({ programmer: "t56", t56Algorithm: new Uint8Array([1, 2, 3]) }));
+  });
+
+  it.each(["t48", "auto"] as const)("blocks a %s write before powering a T48 missing payload OUT", async (programmerKind) => {
+    const device = new FakeDevice();
+    const alternate = {
+      alternateSetting: 0,
+      endpoints: [
+        { endpointNumber: 1, direction: "in", type: "bulk" },
+        { endpointNumber: 1, direction: "out", type: "bulk" },
+        { endpointNumber: 2, direction: "in", type: "bulk" }
+      ]
+    } as const;
+    device.configuration = { configurationValue: 1, interfaces: [{ interfaceNumber: 0, alternate, alternates: [alternate] }] };
+    const info = new Uint8Array(80);
+    info[4] = 1;
+    info[6] = 7;
+    device.in = [info];
+    vi.stubGlobal("fetch", async () => new Response(readFileSync(new URL("../../dist/xgecu_web.wasm", import.meta.url))));
+    try {
+      const api = await createProgrammer({ usb: fakeUsb(device) });
+      const programmer = await api.connectProgrammer(device);
+      try {
+        await expect(api.writeROM({
+          programmer, programmerKind, device: "AT28C64B", data: new Uint8Array(8192)
+        })).rejects.toMatchObject({ code: programmerKind === "auto" ? "ProgrammerMismatch" : "WebUSBLifecycleFailed" });
+        expect(device.out.every(({ endpoint, data }) => endpoint === 1 && data[0] === 0)).toBe(true);
+      } finally {
+        await programmer.close();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("selects the T76 alternate with endpoint 5 OUT and endpoint 2 IN", async () => {
@@ -666,13 +713,15 @@ describe("BrowserXgecuWebUSB", () => {
     expect(runOperation).toHaveBeenCalledOnce();
   });
 
-  it("snapshots write options and bytes before asynchronous device setup", async () => {
+  it.each([
+    ["Uint8Array", new Uint8Array(8192)],
+    ["Buffer subarray", Buffer.alloc(8200).subarray(8)]
+  ] as const)("snapshots %s write bytes and options before asynchronous device setup", async (_kind, data) => {
     const device = new FakeDevice();
     const wasm = fakeWasm();
     const startWriteROM = vi.spyOn(wasm, "startWriteROM");
     const api = new BrowserXgecuWebUSB(wasm, fakeUsb(device));
     const programmer = await api.requestProgrammer();
-    const data = new Uint8Array(8192);
     data[0] = 0x12;
     const options = { programmer, device: "AT28C64B@DIP28", data, verify: true };
 
