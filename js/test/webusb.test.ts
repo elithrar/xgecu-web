@@ -475,10 +475,20 @@ describe("BrowserXgecuWebUSB", () => {
       const api = await createProgrammer({ usb: fakeUsb(device) });
       const programmer = await api.connectProgrammer(device);
       try {
-        await expect(api.writeROM({
-          programmer, programmerKind, device: "AT28C64B", data: new Uint8Array(8192)
-        })).rejects.toMatchObject({ code: programmerKind === "auto" ? "ProgrammerMismatch" : "WebUSBLifecycleFailed" });
-        expect(device.out.every(({ endpoint, data }) => endpoint === 1 && data[0] === 0)).toBe(true);
+        const t48Targets = api.deviceList({ programmer: "t48" });
+        // Auto can probe this shared T48/T56 profile to disambiguate the model.
+        const targets = programmerKind === "auto"
+          ? t48Targets.filter((target) => target.name === "AT28C64B@DIP28") : t48Targets;
+        expect(targets.length).toBeGreaterThan(0);
+        for (const target of targets) {
+          await expect(api.writeROM({
+            programmer, programmerKind, device: target.name,
+            data: new Uint8Array(target.codeMemorySize), erase: target.canErase, verify: true,
+          }), target.name).rejects.toMatchObject({
+            code: programmerKind === "auto" ? "ProgrammerMismatch" : "WebUSBLifecycleFailed",
+          });
+          expect(device.out.every(({ endpoint, data }) => endpoint === 1 && data[0] === 0), target.name).toBe(true);
+        }
       } finally {
         await programmer.close();
       }
