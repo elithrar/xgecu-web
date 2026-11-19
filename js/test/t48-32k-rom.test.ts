@@ -17,23 +17,23 @@ function t48(options: { chipId?: number; initialByte?: number; badId?: boolean; 
   const commands: number[] = [];
   const reads: number[] = [];
   const writes: number[] = [];
+  const blankCoverage = new Uint8Array(memory.length);
   let command = new Uint8Array();
   let wrote = false;
-  let blankBytesRead = 0;
-  return { memory, commands, reads, writes, transfer: async (transfer: UsbTransfer) => {
+  return { memory, commands, reads, writes, blankCoverage, transfer: async (transfer: UsbTransfer) => {
     if (transfer.direction === "out") {
       if (transfer.endpoint === 1) {
         command = transfer.data.slice();
         commands.push(command[0]!);
         if (command[0] === 0x0e) {
-          blankBytesRead = 0;
+          blankCoverage.fill(0);
           if (!options.failedErase) memory.fill(0xff);
         }
       } else {
         expect(transfer.endpoint).toBe(2);
         expect(command[0]).toBe(0x0c);
         // EPROM programming only clears bits; EEPROM has a byte-erase cycle.
-        if (!options.byteRewrite) expect(blankBytesRead).toBe(memory.length);
+        if (!wrote && !options.byteRewrite) expect(blankCoverage.every((byte) => byte === 1)).toBe(true);
         const view = new DataView(command.buffer);
         const address = view.getUint32(4, true);
         const length = view.getUint16(2, true);
@@ -55,7 +55,7 @@ function t48(options: { chipId?: number; initialByte?: number; badId?: boolean; 
       expect(length).toBeLessThanOrEqual(options.readBufferSize ?? 1024);
       expect(address + length).toBeLessThanOrEqual(memory.length);
       reads.push(address);
-      if (!wrote) blankBytesRead += length;
+      if (!wrote) blankCoverage.fill(1, address, address + length);
       const result = memory.slice(address, address + length);
       if (options.corruptReadback && wrote && address === 0x7c00) result[1023]! ^= 1;
       return result;
@@ -192,6 +192,26 @@ it.each(["W27E257", "W27E257@DIP28", "W27E257-10", "W27E257-12", "W27E257-15"])(
       .toThrow("device not found or unsupported");
   },
 );
+
+const t48Targets = (await bridge()).deviceList({ programmer: "t48" });
+
+it.each(t48Targets)("$name refuses to program when the last chip byte remains nonblank", async (target) => {
+  const api = await bridge();
+  const fake = t48({
+    size: target.codeMemorySize, chipId: target.chipId, initialByte: target.blankValue,
+    failedErase: true,
+  });
+  fake.memory[target.codeMemorySize - 1] = target.blankValue ^ 1;
+  const write = api.startWriteROM({
+    ...writeOptions, device: target.name, data: new Uint8Array(target.codeMemorySize), erase: target.canErase,
+  });
+  await expect(api.runOperation(write, fake.transfer)).rejects.toMatchObject({ code: "TargetNotBlank" });
+  expect(fake.blankCoverage.every((byte) => byte === 1)).toBe(true);
+  expect(fake.commands.filter((command) => command === 0x0e)).toHaveLength(target.canErase ? 1 : 0);
+  expect(fake.commands).not.toContain(0x0c);
+  expect(fake.writes).toHaveLength(0);
+  expect(fake.commands.at(-1)).toBe(0x04);
+});
 
 it("preserves AT28C64B EEPROM rewriting without a full-chip erase or blank requirement", async () => {
   const api = await bridge();
